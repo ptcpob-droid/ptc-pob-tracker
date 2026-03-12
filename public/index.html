@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>PTC POB Tracker</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+    <!-- LOGIN SCREEN -->
+    <div id="login-screen" class="login-screen">
+        <div class="login-box">
+            <div class="login-logo">
+                <span class="logo" style="font-size:2rem">POB</span>
+                <span class="logo-sub" style="font-size:1.2rem">Tracker</span>
+            </div>
+            <h2>PTC Login</h2>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="login-username" class="input" placeholder="Enter username" autocomplete="username" autocapitalize="off">
+            </div>
+            <div class="form-group">
+                <label>PIN</label>
+                <input type="password" id="login-pin" class="input" placeholder="Enter PIN" inputmode="numeric" pattern="[0-9]*" autocomplete="current-password" maxlength="8">
+            </div>
+            <div id="login-error" class="login-error"></div>
+            <button id="login-btn" class="btn btn-primary btn-lg">Login</button>
+        </div>
+    </div>
+
+    <!-- CHANGE PIN SCREEN -->
+    <div id="change-pin-screen" class="login-screen" style="display:none">
+        <div class="login-box">
+            <h2>Change Your PIN</h2>
+            <p style="color:var(--text-dim);margin-bottom:16px;font-size:0.9rem">You must set a new PIN before continuing</p>
+            <div class="form-group">
+                <label>New PIN (4-8 digits)</label>
+                <input type="password" id="new-pin" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="New PIN">
+            </div>
+            <div class="form-group">
+                <label>Confirm PIN</label>
+                <input type="password" id="confirm-pin" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="Confirm PIN">
+            </div>
+            <div id="pin-error" class="login-error"></div>
+            <button id="change-pin-btn" class="btn btn-primary btn-lg">Set New PIN</button>
+        </div>
+    </div>
+
+    <!-- 2FA VERIFICATION SCREEN -->
+    <div id="totp-screen" class="login-screen" style="display:none">
+        <div class="login-box">
+            <h2>Two-Factor Authentication</h2>
+            <p style="color:var(--text-dim);margin-bottom:16px;font-size:0.9rem">Enter the 6-digit code from your authenticator app</p>
+            <div class="form-group">
+                <label>2FA Code</label>
+                <input type="text" id="totp-code" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" style="text-align:center;font-size:1.5rem;letter-spacing:8px">
+            </div>
+            <div id="totp-error" class="login-error"></div>
+            <button id="totp-verify-btn" class="btn btn-primary btn-lg">Verify</button>
+            <button id="totp-back-btn" class="btn btn-outline" style="margin-top:8px;width:100%">Back to Login</button>
+        </div>
+    </div>
+
+    <!-- 2FA SETUP MODAL -->
+    <div id="totp-setup-modal" class="overlay hidden">
+        <div class="overlay-content" style="max-width:440px">
+            <h2 id="totp-setup-title">Set Up 2FA</h2>
+            <div id="totp-setup-step1">
+                <p style="color:var(--text-dim);margin-bottom:16px;font-size:0.9rem">Scan this QR code with your authenticator app (Google Authenticator, Microsoft Authenticator, etc.)</p>
+                <div style="text-align:center;margin-bottom:16px">
+                    <img id="totp-setup-qr" style="width:200px;height:200px;background:white;border-radius:8px" alt="2FA QR Code">
+                </div>
+                <div style="text-align:center;margin-bottom:16px">
+                    <p style="font-size:0.75rem;color:var(--text-dim)">Or enter this key manually:</p>
+                    <code id="totp-setup-secret" style="font-size:0.9rem;color:var(--primary);word-break:break-all"></code>
+                </div>
+                <div class="form-group">
+                    <label>Enter the 6-digit code to confirm</label>
+                    <input type="text" id="totp-setup-code" class="input" inputmode="numeric" maxlength="6" placeholder="000000" style="text-align:center;font-size:1.3rem;letter-spacing:6px">
+                </div>
+                <div id="totp-setup-error" class="login-error"></div>
+                <button id="totp-setup-confirm" class="btn btn-primary btn-lg">Enable 2FA</button>
+            </div>
+            <button id="totp-setup-cancel" class="btn btn-outline" style="margin-top:8px;width:100%">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Top Bar -->
+    <header class="topbar" style="display:none">
+        <div class="topbar-left">
+            <span class="logo">POB</span>
+            <span class="logo-sub">Tracker</span>
+        </div>
+        <div class="topbar-right">
+            <span id="live-clock" class="clock"></span>
+            <span id="session-badge" class="badge badge-am">AM</span>
+            <span id="user-badge" class="badge badge-success" style="cursor:pointer" title="Tap to logout"></span>
+        </div>
+    </header>
+
+    <!-- Setup Overlay -->
+    <div id="setup-overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <h2>Scanner Setup</h2>
+            <p>Select your project, site, and session</p>
+            <div class="form-group">
+                <label>Project</label>
+                <select id="setup-project" class="input"><option value="">Loading...</option></select>
+            </div>
+            <div class="form-group">
+                <label>Site</label>
+                <select id="setup-site" class="input" disabled><option value="">Select project first</option></select>
+            </div>
+            <div class="form-group">
+                <label>Session</label>
+                <div class="session-toggle">
+                    <button class="btn-session active" data-session="AM">AM (Morning)</button>
+                    <button class="btn-session" data-session="PM">PM (Afternoon)</button>
+                </div>
+            </div>
+            <button id="setup-confirm" class="btn btn-primary btn-lg">Start Scanning</button>
+        </div>
+    </div>
+
+    <!-- Import Modal -->
+    <div id="import-modal" class="overlay hidden">
+        <div class="overlay-content">
+            <h2>Import Roster</h2>
+            <p>Upload CSV (same headers format for any project)</p>
+            <div class="form-group">
+                <label>Project Name</label>
+                <input type="text" id="import-project-name" class="input" placeholder="e.g. Ruwais Phase 3">
+            </div>
+            <div class="form-group">
+                <label>CSV File</label>
+                <input type="file" id="import-file" class="input" accept=".csv" style="padding:8px">
+            </div>
+            <div style="display:flex;gap:8px">
+                <button id="import-cancel" class="btn btn-outline" style="flex:1">Cancel</button>
+                <button id="import-confirm" class="btn btn-primary" style="flex:1">Import</button>
+            </div>
+            <div id="import-status" style="margin-top:12px;font-size:0.85rem;color:var(--text-dim)"></div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <main id="main-content" style="display:none">
+        <nav class="tab-nav">
+            <button class="tab active" data-tab="scanner">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+                Scanner
+            </button>
+            <button class="tab" data-tab="dashboard">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                Dashboard
+            </button>
+            <button class="tab" data-tab="qrcodes">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-5v5"/></svg>
+                QR Codes
+            </button>
+            <button class="tab" data-tab="admin" id="admin-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Admin
+            </button>
+        </nav>
+
+        <!-- Scanner Tab -->
+        <div id="tab-scanner" class="tab-content active">
+            <div class="scanner-header">
+                <div class="scanner-info">
+                    <div>
+                        <span id="current-project-name" class="project-label">Project</span>
+                        <span id="current-site-name" class="site-label">Site</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span id="current-session-label" class="badge badge-am">AM</span>
+                        <button id="btn-change-setup" class="btn btn-sm btn-outline">Change</button>
+                    </div>
+                </div>
+                <div class="scan-counter">
+                    <span id="scan-count" class="count-num">0</span>
+                    <span id="scan-total" class="count-label">/ 0</span>
+                    <span class="count-label">scanned</span>
+                </div>
+            </div>
+            <div id="qr-reader" class="qr-reader-container"></div>
+            <div class="manual-entry">
+                <input type="text" id="manual-emp-no" class="input" placeholder="Type Employee No. manually">
+                <button id="btn-manual-scan" class="btn btn-primary">Submit</button>
+            </div>
+            <div id="scan-result" class="scan-result" style="display:none"></div>
+            <div class="recent-scans"><h3>Recent Scans</h3><div id="recent-scans-list"></div></div>
+        </div>
+
+        <!-- Dashboard Tab -->
+        <div id="tab-dashboard" class="tab-content">
+            <div class="dashboard-controls">
+                <input type="date" id="dash-date" class="input">
+                <select id="dash-project" class="input"><option value="">All Projects</option></select>
+                <select id="dash-site" class="input"><option value="">All Sites</option></select>
+            </div>
+            <div id="stats-cards" class="stats-grid"></div>
+            <div class="section">
+                <div class="section-header">
+                    <h3>Headcount by Project / Site</h3>
+                    <button id="btn-export" class="btn btn-sm btn-outline">Export CSV</button>
+                </div>
+                <div id="headcount-table-wrap" class="table-wrap"></div>
+            </div>
+            <div class="section">
+                <div class="section-header">
+                    <h3>Personnel</h3>
+                    <div class="toggle-group">
+                        <button class="btn-toggle active" data-view="present">Present</button>
+                        <button class="btn-toggle" data-view="missing">Missing</button>
+                    </div>
+                </div>
+                <div id="personnel-list" class="personnel-list"></div>
+            </div>
+        </div>
+
+        <!-- QR Codes Tab -->
+        <div id="tab-qrcodes" class="tab-content">
+            <div class="qr-controls">
+                <select id="qr-project-filter" class="input"><option value="">All Projects</option></select>
+                <input type="text" id="qr-search" class="input" placeholder="Search by name or ID...">
+                <button id="btn-print-qr" class="btn btn-primary">Print QR Cards</button>
+            </div>
+            <div id="qr-grid" class="qr-grid"></div>
+        </div>
+
+        <!-- Admin Tab (admin only) -->
+        <div id="tab-admin" class="tab-content">
+            <div class="settings-section">
+                <h3>Users &amp; Supervisors</h3>
+                <div id="users-list"></div>
+                <div class="settings-item" style="margin-top:12px;flex-wrap:wrap;gap:6px">
+                    <input type="text" id="new-username" class="input" placeholder="Username" style="flex:1;min-width:100px">
+                    <input type="text" id="new-displayname" class="input" placeholder="Full Name" style="flex:1;min-width:100px">
+                    <input type="text" id="new-userpin" class="input" placeholder="PIN (4+ digits)" style="flex:0.6;min-width:80px" inputmode="numeric">
+                    <select id="new-userrole" class="input" style="flex:0.6;min-width:100px">
+                        <option value="supervisor">Supervisor</option>
+                        <option value="project_manager">Project Manager</option>
+                        <option value="viewer">Viewer</option>
+                        <option value="admin">Admin</option>
+                        <option value="executive">Executive</option>
+                    </select>
+                    <button id="btn-add-user" class="btn btn-sm btn-primary">Add User</button>
+                </div>
+            </div>
+            <div class="settings-section">
+                <h3>Projects</h3>
+                <div id="projects-list"></div>
+                <div class="settings-item" style="margin-top:12px">
+                    <input type="text" id="new-project-name" class="input" placeholder="New project name">
+                    <button id="btn-add-project" class="btn btn-sm btn-primary">Add</button>
+                </div>
+            </div>
+            <div class="settings-section">
+                <h3>Import Roster</h3>
+                <div class="settings-item">
+                    <div><strong>Upload CSV</strong><p>Same headers for any project</p></div>
+                    <button id="btn-open-import" class="btn btn-sm btn-primary">Import CSV</button>
+                </div>
+                <div class="settings-item">
+                    <div><strong>Re-import Default</strong><p>Re-import default roster CSV</p></div>
+                    <button id="btn-reimport" class="btn btn-sm btn-outline">Re-import</button>
+                </div>
+            </div>
+            <div class="settings-section">
+                <h3>My 2FA</h3>
+                <div id="my-2fa-status"></div>
+            </div>
+            <div class="settings-section">
+                <h3>Audit Log</h3>
+                <div id="audit-log" style="max-height:300px;overflow-y:auto"></div>
+            </div>
+        </div>
+    </main>
+
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/app.js"></script>
+</body>
+</html>

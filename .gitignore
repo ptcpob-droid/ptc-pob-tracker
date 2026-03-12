@@ -1,0 +1,12 @@
+*.db
+*.pyc
+__pycache__/
+.env
+certs/
+cert.pem
+key.pem
+uploaded_roster.csv
+qr_codes.html
+node_modules/
+pob.json
+*.xlsx

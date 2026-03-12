@@ -1,0 +1,5 @@
+{
+  "name": "ptc-pob-tracker",
+  "version": "1.0.0",
+  "description": "PTC Daily POB headcount tracker with QR code scanning"
+}
