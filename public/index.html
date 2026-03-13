@@ -101,7 +101,7 @@
         </div>
         <div class="topbar-right">
             <span id="live-clock" class="clock"></span>
-            <span id="session-badge" class="badge badge-am">AM</span>
+            <span id="session-badge" class="badge badge-am">9 AM</span>
             <span id="user-badge" class="badge badge-success" style="cursor:pointer" title="Tap to logout"></span>
         </div>
     </header>
@@ -122,8 +122,9 @@
             <div class="form-group">
                 <label>Session</label>
                 <div class="session-toggle">
-                    <button class="btn-session active" data-session="AM">AM (Morning)</button>
-                    <button class="btn-session" data-session="PM">PM (Afternoon)</button>
+                    <button class="btn-session active" data-session="AM">9 AM</button>
+                    <button class="btn-session" data-session="PM">2 PM</button>
+                    <button class="btn-session" data-session="EV">6 PM</button>
                 </div>
             </div>
             <button id="setup-confirm" class="btn btn-primary btn-lg">Start Scanning</button>
@@ -145,7 +146,16 @@
             </div>
             <div style="display:flex;gap:8px">
                 <button id="import-cancel" class="btn btn-outline" style="flex:1">Cancel</button>
-                <button id="import-confirm" class="btn btn-primary" style="flex:1">Import</button>
+                <button id="import-confirm" class="btn btn-primary" style="flex:1">Import CSV</button>
+            </div>
+            <hr style="margin:16px 0;border-color:var(--border)">
+            <p><strong>Excel (4 NEB sheets)</strong> — one project per sheet</p>
+            <div class="form-group">
+                <label>Excel (.xlsx)</label>
+                <input type="file" id="import-excel-file" class="input" accept=".xlsx" style="padding:8px">
+            </div>
+            <div class="form-group">
+                <button id="import-excel-btn" class="btn btn-primary">Import Excel</button>
             </div>
             <div id="import-status" style="margin-top:12px;font-size:0.85rem;color:var(--text-dim)"></div>
         </div>
@@ -181,7 +191,7 @@
                         <span id="current-site-name" class="site-label">Site</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:6px">
-                        <span id="current-session-label" class="badge badge-am">AM</span>
+                        <span id="current-session-label" class="badge badge-am">9 AM</span>
                         <button id="btn-change-setup" class="btn btn-sm btn-outline">Change</button>
                     </div>
                 </div>
@@ -218,6 +228,11 @@
             <div class="section">
                 <div class="section-header">
                     <h3>Personnel</h3>
+                    <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session for Present/Missing">
+                        <option value="AM">9 AM</option>
+                        <option value="PM">2 PM</option>
+                        <option value="EV">6 PM</option>
+                    </select>
                     <div class="toggle-group">
                         <button class="btn-toggle active" data-view="present">Present</button>
                         <button class="btn-toggle" data-view="missing">Missing</button>
@@ -244,10 +259,15 @@
                 <div id="users-list"></div>
                 <div class="settings-item" style="margin-top:12px;flex-wrap:wrap;gap:6px">
                     <input type="text" id="new-username" class="input" placeholder="Username" style="flex:1;min-width:100px">
-                    <input type="text" id="new-displayname" class="input" placeholder="Full Name" style="flex:1;min-width:100px">
+                    <input type="text" id="new-displayname" class="input" placeholder="Name (required)" style="flex:1;min-width:100px" title="Scanner name is recorded on each scan">
+                    <input type="email" id="new-useremail" class="input" placeholder="Email (required for Scanner/Focal Point)" style="flex:1;min-width:140px">
+                    <input type="text" id="new-userdesignation" class="input" placeholder="Designation (required for Scanner/Focal Point)" style="flex:1;min-width:120px">
                     <input type="text" id="new-userpin" class="input" placeholder="PIN (4+ digits)" style="flex:0.6;min-width:80px" inputmode="numeric">
-                    <select id="new-userrole" class="input" style="flex:0.6;min-width:100px">
+                    <select id="new-userrole" class="input" style="flex:0.6;min-width:120px">
+                        <option value="scanner">Scanner</option>
+                        <option value="focal_point">Focal Point (view only)</option>
                         <option value="supervisor">Supervisor</option>
+                        <option value="manager">Manager (view all)</option>
                         <option value="project_manager">Project Manager</option>
                         <option value="viewer">Viewer</option>
                         <option value="admin">Admin</option>
@@ -255,12 +275,15 @@
                     </select>
                     <button id="btn-add-user" class="btn btn-sm btn-primary">Add User</button>
                 </div>
+                <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+                <p class="form-hint">Scanner/Focal Point: Name, Email and Designation are required; each scan records the scanner’s identity. Assign at least one area; each site can only access its own data. Focal Points (ADNOC Onshore) are view-only. Manager and Executive see all areas.</p>
             </div>
             <div class="settings-section">
-                <h3>Projects</h3>
+                <h3>Areas</h3>
                 <div id="projects-list"></div>
+                <p class="form-hint">15 areas: 1–3 P&C BAB/NEB, 4–9 P&C GTG, 10–13 P&C SE, 14–15 P&C Buhasa. Assign areas to Scanner/Focal Point; they cannot see other sites’ data.</p>
                 <div class="settings-item" style="margin-top:12px">
-                    <input type="text" id="new-project-name" class="input" placeholder="New project name">
+                    <input type="text" id="new-project-name" class="input" placeholder="New area name (optional)">
                     <button id="btn-add-project" class="btn btn-sm btn-primary">Add</button>
                 </div>
             </div>
@@ -269,6 +292,10 @@
                 <div class="settings-item">
                     <div><strong>Upload CSV</strong><p>Same headers for any project</p></div>
                     <button id="btn-open-import" class="btn btn-sm btn-primary">Import CSV</button>
+                </div>
+                <div class="settings-item">
+                    <div><strong>Import Excel (4 NEB sheets)</strong><p>One project per sheet; unique QR per person</p></div>
+                    <button id="btn-open-import-excel" class="btn btn-sm btn-primary">Import Excel</button>
                 </div>
                 <div class="settings-item">
                     <div><strong>Re-import Default</strong><p>Re-import default roster CSV</p></div>

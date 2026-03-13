@@ -55,11 +55,18 @@ function timeStr() {
     return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+const SESSION_LABELS = { AM: '9 AM', PM: '2 PM', EV: '6 PM' };
+function sessionByHour() {
+    const h = new Date().getHours();
+    if (h < 12) return 'AM';
+    if (h < 18) return 'PM';
+    return 'EV';
+}
 function updateClock() {
     const now = new Date();
     $('#live-clock').textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const s = now.getHours() < 12 ? 'AM' : 'PM';
-    $('#session-badge').textContent = s;
+    const s = sessionByHour();
+    $('#session-badge').textContent = SESSION_LABELS[s] || s;
     $('#session-badge').className = `badge badge-${s.toLowerCase()}`;
 }
 
@@ -86,6 +93,8 @@ function showApp() {
     $('header.topbar').style.display = 'flex';
     $('#user-badge').textContent = state.user.display_name;
     $('#admin-tab').style.display = (state.user.role === 'admin' || state.user.role === 'executive') ? '' : 'none';
+    const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
+    if (scannerTab) scannerTab.style.display = (state.user.role === 'focal_point') ? 'none' : '';
     $('#setup-overlay').classList.remove('hidden');
 }
 
@@ -343,8 +352,7 @@ function initSetup() {
     loadProjects(projectSelect);
     projectSelect.addEventListener('change', () => loadSitesForProject(siteSelect, projectSelect.value));
 
-    const hour = new Date().getHours();
-    const auto = hour < 12 ? 'AM' : 'PM';
+    const auto = sessionByHour();
     $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === auto));
     state.session = auto;
 
@@ -385,7 +393,7 @@ function initSetup() {
             state.projectName = s.projectName;
             state.siteId = s.siteId;
             state.siteName = s.siteName;
-            state.session = s.session || auto;
+            state.session = (s.session && ['AM','PM','EV'].includes(s.session)) ? s.session : auto;
             setTimeout(() => {
                 projectSelect.value = s.projectId;
                 loadSitesForProject(siteSelect, s.projectId).then(() => siteSelect.value = s.siteId);
@@ -399,8 +407,8 @@ function updateScannerHeader() {
     $('#current-project-name').textContent = state.projectName;
     $('#current-site-name').textContent = state.siteName;
     const lbl = $('#current-session-label');
-    lbl.textContent = state.session;
-    lbl.className = `badge badge-${state.session.toLowerCase()}`;
+    lbl.textContent = SESSION_LABELS[state.session] || state.session;
+    lbl.className = `badge badge-${(state.session || 'am').toLowerCase()}`;
 }
 
 // ============================================================
@@ -429,6 +437,36 @@ function initImportModal() {
             if (result.success) {
                 toast(result.message, 'success');
                 setTimeout(() => { $('#import-modal').classList.add('hidden'); status.textContent = ''; }, 1500);
+            }
+        } catch (e) {
+            status.textContent = 'Upload failed';
+        }
+    });
+
+    $('#btn-open-import-excel')?.addEventListener('click', () => {
+        $('#import-modal').classList.remove('hidden');
+        $('#import-excel-file').focus?.();
+    });
+
+    $('#import-excel-btn')?.addEventListener('click', async () => {
+        const file = $('#import-excel-file')?.files?.[0];
+        if (!file) return toast('Select an Excel (.xlsx) file', 'error');
+        const status = $('#import-status');
+        status.textContent = 'Importing Excel...';
+        const form = new FormData();
+        form.append('file', file);
+        form.append('region', 'P&C BAB/NEB');
+        try {
+            const res = await fetch('/api/import-excel', {
+                method: 'POST', body: form,
+                headers: { 'Authorization': `Bearer ${state.token}` }
+            });
+            const result = await res.json();
+            status.textContent = result.message || result.error || 'Done';
+            if (result.success) {
+                toast(result.message, 'success');
+                $('#import-excel-file').value = '';
+                setTimeout(() => { $('#import-modal').classList.add('hidden'); status.textContent = ''; }, 2000);
             }
         } catch (e) {
             status.textContent = 'Upload failed';
@@ -466,8 +504,46 @@ async function onScanSuccess(decodedText) {
     await processScan(decodedText.trim());
 }
 
-async function processScan(employeeNo) {
-    if (!employeeNo || !state.projectId || !state.siteId) return;
+async function processScan(decodedText) {
+    let employeeNo = decodedText && decodedText.trim();
+    if (!employeeNo) return;
+
+    // Unique QR format: "project_id|employee_no" — switch project/site when scanned
+    const projectSelect = $('#setup-project');
+    const siteSelect = $('#setup-site');
+    if (employeeNo.includes('|')) {
+        const [pid, empNo] = employeeNo.split('|').map(s => s.trim());
+        if (pid && empNo) {
+            employeeNo = empNo;
+            const projects = await api('/projects');
+            const proj = Array.isArray(projects) && projects.find(p => String(p.id) === String(pid));
+            if (proj) {
+                state.projectId = String(pid);
+                state.projectName = proj.name || '';
+                const sites = await api(`/sites?project_id=${pid}`);
+                if (Array.isArray(sites) && sites.length) {
+                    state.siteId = String(sites[0].id);
+                    state.siteName = sites[0].name || '';
+                    projectSelect.value = state.projectId;
+                    await loadSitesForProject(siteSelect, state.projectId);
+                    siteSelect.value = state.siteId;
+                    const opt = siteSelect.querySelector(`option[value="${state.siteId}"]`);
+                    if (opt) state.siteName = opt.textContent;
+                    updateScannerHeader();
+                    try {
+                        const saved = JSON.parse(localStorage.getItem('pob_setup') || '{}');
+                        saved.projectId = state.projectId;
+                        saved.projectName = state.projectName;
+                        saved.siteId = state.siteId;
+                        saved.siteName = state.siteName;
+                        localStorage.setItem('pob_setup', JSON.stringify(saved));
+                    } catch (e) {}
+                }
+            }
+        }
+    }
+
+    if (!state.projectId || !state.siteId) return;
 
     const resultDiv = $('#scan-result');
     resultDiv.style.display = 'block';
@@ -525,7 +601,7 @@ async function loadTodayCount() {
     try {
         const data = await api(`/headcount?project_id=${state.projectId}&site_id=${state.siteId}&session=${state.session}`);
         if (data.sites && data.sites.length > 0) {
-            state.scanCount = data.sites[0][state.session] || 0;
+            state.scanCount = (data.sites && data.sites[0]) ? (data.sites[0][state.session] ?? 0) : 0;
             state.totalEmployees = data.sites[0].total_employees || 0;
         } else {
             state.scanCount = 0;
@@ -565,23 +641,26 @@ async function loadDashboard() {
     const [hc, stats] = await Promise.all([api(url), api(su)]);
     if (!stats.total_employees && stats.total_employees !== 0) return;
 
-    const amP = stats.total_employees > 0 ? Math.round((stats.today_am / stats.total_employees) * 100) : 0;
-    const pmP = stats.total_employees > 0 ? Math.round((stats.today_pm / stats.total_employees) * 100) : 0;
+    const amP = stats.total_employees > 0 ? Math.round(((stats.today_am || 0) / stats.total_employees) * 100) : 0;
+    const pmP = stats.total_employees > 0 ? Math.round(((stats.today_pm || 0) / stats.total_employees) * 100) : 0;
+    const evP = stats.total_employees > 0 ? Math.round(((stats.today_ev || 0) / stats.total_employees) * 100) : 0;
     $('#stats-cards').innerHTML = `
         <div class="stat-card"><div class="stat-value blue">${esc(String(stats.total_employees))}</div><div class="stat-label">Total Workforce</div></div>
-        <div class="stat-card"><div class="stat-value green">${esc(String(stats.today_am))} <small style="font-size:0.7em;opacity:0.7">(${amP}%)</small></div><div class="stat-label">AM Present</div></div>
-        <div class="stat-card"><div class="stat-value purple">${esc(String(stats.today_pm))} <small style="font-size:0.7em;opacity:0.7">(${pmP}%)</small></div><div class="stat-label">PM Present</div></div>
+        <div class="stat-card"><div class="stat-value green">${esc(String(stats.today_am ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${amP}%)</small></div><div class="stat-label">9 AM Present</div></div>
+        <div class="stat-card"><div class="stat-value purple">${esc(String(stats.today_pm ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${pmP}%)</small></div><div class="stat-label">2 PM Present</div></div>
+        <div class="stat-card"><div class="stat-value teal">${esc(String(stats.today_ev ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${evP}%)</small></div><div class="stat-label">6 PM Present</div></div>
         <div class="stat-card"><div class="stat-value orange">${esc(String(stats.total_projects))}</div><div class="stat-label">Projects</div></div>`;
 
     const tw = $('#headcount-table-wrap');
     if (!hc.sites || hc.sites.length === 0) {
         tw.innerHTML = '<div class="empty-state">No attendance data for this date</div>';
     } else {
-        let h = '<table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>AM</th><th>PM</th><th>AM %</th></tr></thead><tbody>';
+        let h = '<table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>2 PM</th><th>6 PM</th><th>9 AM %</th></tr></thead><tbody>';
         hc.sites.forEach(r => {
-            const pct = r.total_employees > 0 ? Math.round((r.AM / r.total_employees) * 100) : 0;
+            const am = r.AM ?? 0, pm = r.PM ?? 0, ev = r.EV ?? 0;
+            const pct = r.total_employees > 0 ? Math.round((am / r.total_employees) * 100) : 0;
             const c = pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--danger)';
-            h += `<tr><td>${esc(r.project)}</td><td>${esc(r.site)}</td><td>${r.total_employees}</td><td><strong>${r.AM}</strong></td><td><strong>${r.PM}</strong></td>
+            h += `<tr><td>${esc(r.project)}</td><td>${esc(r.site)}</td><td>${r.total_employees}</td><td><strong>${am}</strong></td><td><strong>${pm}</strong></td><td><strong>${ev}</strong></td>
                 <td><div style="display:flex;align-items:center;gap:6px"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${c}"></div></div><span style="font-size:0.8rem">${pct}%</span></div></td></tr>`;
         });
         tw.innerHTML = h + '</tbody></table>';
@@ -594,7 +673,8 @@ async function loadPersonnel(view = 'present') {
     const list = $('#personnel-list');
     list.innerHTML = '<div class="spinner"></div>';
 
-    let url = `${view === 'present' ? '/headcount/detail' : '/headcount/missing'}?date=${d}&session=AM`;
+    const sess = $('#dash-session')?.value || 'AM';
+    let url = `${view === 'present' ? '/headcount/detail' : '/headcount/missing'}?date=${d}&session=${sess}`;
     if (p) url += `&project_id=${p}`;
     if (s) url += `&site_id=${s}`;
 
@@ -603,10 +683,13 @@ async function loadPersonnel(view = 'present') {
         list.innerHTML = `<div class="empty-state">No ${view === 'present' ? 'scanned' : 'missing'} personnel</div>`;
         return;
     }
-    list.innerHTML = data.slice(0, 200).map(r => `<div class="person-item"><div>
+    list.innerHTML = data.slice(0, 200).map(r => {
+        const by = r.supervisor_name ? (r.scanner_designation ? `by ${esc(r.supervisor_name)} (${esc(r.scanner_designation)})` : `by ${esc(r.supervisor_name)}`) : '';
+        return `<div class="person-item"><div>
         <div class="person-name">${esc(r.name)}</div>
-        <div class="person-detail">${esc(r.designation || '')} | ${esc(r.discipline || '')} | ${esc(r.employee_no)}${r.supervisor_name ? ' | by ' + esc(r.supervisor_name) : ''}</div>
-        </div>${r.scanned_at ? `<div class="person-detail">${new Date(r.scanned_at).toLocaleTimeString()}</div>` : ''}</div>`).join('');
+        <div class="person-detail">${esc(r.designation || '')} | ${esc(r.discipline || '')} | ${esc(r.employee_no)}${by ? ' | ' + by : ''}</div>
+        </div>${r.scanned_at ? `<div class="person-detail">${new Date(r.scanned_at).toLocaleTimeString()}</div>` : ''}</div>`;
+    }).join('');
 }
 
 // ============================================================
@@ -647,20 +730,21 @@ async function loadAdmin() {
 
     const ul = $('#users-list');
     const roleBadge = (role) => {
-        const cls = { executive: 'badge-exec', admin: 'badge-danger', project_manager: 'badge-pm', supervisor: 'badge-am', viewer: 'badge-warning' };
-        return `<span class="badge ${cls[role] || 'badge-warning'}">${esc(role.replace('_', ' '))}</span>`;
+        const cls = { executive: 'badge-exec', admin: 'badge-danger', manager: 'badge-pm', project_manager: 'badge-pm', focal_point: 'badge-warning', scanner: 'badge-am', supervisor: 'badge-am', viewer: 'badge-warning' };
+        return `<span class="badge ${cls[role] || 'badge-warning'}">${esc(String(role).replace('_', ' '))}</span>`;
     };
     ul.innerHTML = users.map((u, idx) => {
-        const projAccess = (u.role === 'executive' || u.role === 'admin')
-            ? '<em style="opacity:0.6">All projects</em>'
-            : (u.projects && u.projects.length ? u.projects.map(p => esc(p.name)).join(', ') : '<em style="color:var(--danger)">No projects assigned</em>');
+        const projAccess = (u.role === 'executive' || u.role === 'admin' || u.role === 'manager')
+            ? '<em style="opacity:0.6">All areas</em>'
+            : (u.projects && u.projects.length ? u.projects.map(p => esc(p.name)).join(', ') : '<em style="color:var(--danger)">No areas assigned</em>');
+        const contact = [u.email, u.designation].filter(Boolean).map(esc).join(' · ') || '';
         return `<div class="scan-item">
         <div>
             <div class="scan-item-name">${esc(u.display_name)} ${roleBadge(u.role)}
                 ${u.totp_enabled ? '<span class="badge badge-2fa">2FA</span>' : ''}
                 ${u.active ? '' : '<span class="badge badge-danger">DISABLED</span>'}
                 ${u.locked_until ? '<span class="badge badge-warning">LOCKED</span>' : ''}</div>
-            <div class="scan-item-sub">@${esc(u.username)} | ${projAccess} | Last: ${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'never'}</div>
+            <div class="scan-item-sub">@${esc(u.username)}${contact ? ' | ' + contact : ''} | ${projAccess} | Last: ${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'never'}</div>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button class="btn btn-sm btn-outline" data-action="access" data-idx="${idx}">Access</button>
@@ -705,9 +789,13 @@ async function loadAdmin() {
     const projects = await api('/projects');
     if (Array.isArray(projects)) {
         $('#projects-list').innerHTML = projects.map(p => `<div class="scan-item"><div>
-            <div class="scan-item-name">${esc(p.name)}</div>
+            <div class="scan-item-name">${esc(p.name)}${p.region ? ' <span style="opacity:0.6;font-size:0.85em">(' + esc(p.region) + ')</span>' : ''}</div>
             <div class="scan-item-sub">${p.employee_count} employees | ${p.site_count} sites</div>
-        </div></div>`).join('') || '<div class="empty-state">No projects</div>';
+        </div></div>`).join('') || '<div class="empty-state">No areas</div>';
+        const areaWrap = $('#new-user-areas');
+        if (areaWrap) {
+            areaWrap.innerHTML = projects.map(p => `<label class="area-check"><input type="checkbox" value="${p.id}"> ${esc(p.name)}</label>`).join('');
+        }
     }
 
     const audit = await api('/audit');
@@ -739,24 +827,37 @@ async function adminReset2FA(userId) {
 async function editUserAccess(userId, name, role) {
     const projects = await api('/projects');
     if (!Array.isArray(projects) || projects.length === 0) {
-        toast('No projects exist yet', 'error');
+        toast('No areas yet', 'error');
         return;
     }
     const user = _adminUsers.find(u => u.id === userId);
     const currentIds = new Set((user?.projects || []).map(p => p.id));
+    const userEmail = (user && user.email) ? esc(user.email) : '';
+    const userDesignation = (user && user.designation) ? esc(user.designation) : '';
 
     const modal = document.createElement('div');
     modal.className = 'overlay';
     const safeName = esc(name);
-    modal.innerHTML = `<div class="overlay-content" style="max-width:400px">
-        <h2>Project Access: ${safeName}</h2>
+    modal.innerHTML = `<div class="overlay-content" style="max-width:420px">
+        <h2>Area access: ${safeName}</h2>
         <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.85rem">
-            ${(role === 'executive' || role === 'admin') ? 'This role has access to ALL projects automatically.' : 'Select which projects this user can access:'}
+            ${(role === 'executive' || role === 'admin' || role === 'manager') ? 'This role sees all areas.' : 'Select areas this user can access:'}
         </p>
+        <div class="form-group">
+            <label>Email</label>
+            <input type="email" id="edit-email" class="input" value="${userEmail}" placeholder="Scanner/Focal Point email">
+        </div>
+        <div class="form-group">
+            <label>Designation</label>
+            <input type="text" id="edit-designation" class="input" value="${userDesignation}" placeholder="e.g. Site Supervisor">
+        </div>
         <div class="form-group">
             <label>Role</label>
             <select id="edit-role" class="input">
+                <option value="scanner" ${role === 'scanner' ? 'selected' : ''}>Scanner</option>
+                <option value="focal_point" ${role === 'focal_point' ? 'selected' : ''}>Focal Point (view only)</option>
                 <option value="supervisor" ${role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
+                <option value="manager" ${role === 'manager' ? 'selected' : ''}>Manager (view all)</option>
                 <option value="project_manager" ${role === 'project_manager' ? 'selected' : ''}>Project Manager</option>
                 <option value="viewer" ${role === 'viewer' ? 'selected' : ''}>Viewer</option>
                 <option value="admin" ${role === 'admin' ? 'selected' : ''}>Admin</option>
@@ -766,7 +867,7 @@ async function editUserAccess(userId, name, role) {
         <div id="project-checkboxes" style="max-height:200px;overflow-y:auto;margin-bottom:16px">
             ${projects.map(p => `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
                 <input type="checkbox" value="${p.id}" ${currentIds.has(p.id) ? 'checked' : ''}>
-                <span>${esc(p.name)} <span style="opacity:0.5">(${p.employee_count} workers)</span></span>
+                <span>${esc(p.name)} <span style="opacity:0.5">(${p.employee_count})</span></span>
             </label>`).join('')}
         </div>
         <div style="display:flex;gap:8px">
@@ -779,10 +880,12 @@ async function editUserAccess(userId, name, role) {
     modal.querySelector('#access-cancel').addEventListener('click', () => modal.remove());
     modal.querySelector('#save-access-btn').addEventListener('click', async () => {
         const newRole = modal.querySelector('#edit-role').value;
+        const email = modal.querySelector('#edit-email').value.trim();
+        const designation = modal.querySelector('#edit-designation').value.trim();
         const checked = [...modal.querySelectorAll('#project-checkboxes input:checked')].map(cb => parseInt(cb.value));
         await api(`/users/${userId}`, {
             method: 'PUT',
-            body: JSON.stringify({ role: newRole, project_ids: checked })
+            body: JSON.stringify({ role: newRole, email, designation, project_ids: checked })
         });
         modal.remove();
         toast('User access updated', 'success');
@@ -793,18 +896,35 @@ async function editUserAccess(userId, name, role) {
 function initAdmin() {
     loadAdmin();
 
+    const roleSelect = $('#new-userrole');
+    const areaWrap = $('#new-user-areas');
+    function toggleAreaAssign() {
+        const r = roleSelect.value;
+        if (areaWrap) areaWrap.style.display = (r === 'scanner' || r === 'focal_point') ? 'block' : 'none';
+    }
+    roleSelect.addEventListener('change', toggleAreaAssign);
+    toggleAreaAssign();
+
     $('#btn-add-user').addEventListener('click', async () => {
         const username = $('#new-username').value.trim().toLowerCase();
         const display_name = $('#new-displayname').value.trim();
+        const email = $('#new-useremail').value.trim();
+        const designation = $('#new-userdesignation').value.trim();
         const pin = $('#new-userpin').value.trim();
         const role = $('#new-userrole').value;
-        if (!username || !display_name || !pin) { toast('Fill all fields', 'error'); return; }
-        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, pin, role }) });
+        if (!username || !display_name || !pin) { toast('Username, name and PIN required', 'error'); return; }
+        if ((role === 'scanner' || role === 'focal_point') && !email) { toast('Email required for Scanner/Focal Point', 'error'); return; }
+        if ((role === 'scanner' || role === 'focal_point') && !designation) { toast('Designation required for Scanner/Focal Point', 'error'); return; }
+        let project_ids = [];
+        if (role === 'scanner' || role === 'focal_point') {
+            project_ids = Array.from(document.querySelectorAll('#new-user-areas input:checked')).map(cb => parseInt(cb.value));
+            if (!project_ids.length) { toast('Select at least one area for Scanner/Focal Point', 'error'); return; }
+        }
+        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, email, designation, pin, role, project_ids }) });
         if (res.success) {
             toast(res.message, 'success');
-            $('#new-username').value = '';
-            $('#new-displayname').value = '';
-            $('#new-userpin').value = '';
+            $('#new-username').value = ''; $('#new-displayname').value = ''; $('#new-useremail').value = ''; $('#new-userdesignation').value = ''; $('#new-userpin').value = '';
+            if (areaWrap) areaWrap.querySelectorAll('input').forEach(cb => cb.checked = false);
             loadAdmin();
         } else {
             toast(res.message || 'Failed', 'error');
@@ -856,6 +976,10 @@ function initTabs() {
         rd();
     });
     $('#dash-site').addEventListener('change', rd);
+    $('#dash-session')?.addEventListener('change', () => {
+        const view = document.querySelector('.btn-toggle.active')?.dataset?.view || 'present';
+        loadPersonnel(view);
+    });
 
     $$('.btn-toggle').forEach(btn => {
         btn.addEventListener('click', () => {

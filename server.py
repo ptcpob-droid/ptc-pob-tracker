@@ -34,10 +34,33 @@ ROSTER_CSV = os.path.join(os.path.dirname(__file__), 'adnoc_workforce_roste.csv'
 ROLE_HIERARCHY = {
     'executive': 50,
     'admin': 40,
+    'manager': 35,
     'project_manager': 30,
+    'focal_point': 25,
     'supervisor': 20,
+    'scanner': 18,
     'viewer': 10
 }
+
+# 15 areas only. Each site/area has its own data; scanners/focal points see only their assigned areas.
+# Regions: 1-3 = P&C BAB/NEB | 4-9 = P&C GTG | 10-13 = P&C SE | 14-15 = P&C Buhasa
+AREAS = [
+    ('P&C NEB', 'P&C BAB/NEB'),           # 1
+    ('P&C BAB', 'P&C BAB/NEB'),          # 2
+    ('BAB MP', 'P&C BAB/NEB'),           # 3
+    ('P&C GAS(BAB)', 'P&C GTG'),         # 4
+    ('P&C GAS(ASAB)', 'P&C GTG'),        # 5
+    ('P&C (JD)', 'P&C GTG'),             # 6
+    ('P&C (MPS)', 'P&C GTG'),            # 7
+    ('P&C (FUJ)', 'P&C GTG'),            # 8
+    ('P&C (IPS)', 'P&C GTG'),            # 9
+    ('P&C (Qusahwira/Mender QW/MN)', 'P&C SE'),  # 10
+    ('P&C (SHAH)', 'P&C SE'),            # 11
+    ('P&C Asab', 'P&C SE'),              # 12
+    ('P&C Sahil', 'P&C SE'),             # 13
+    ('P&C Buhasa', 'P&C Buhasa'),        # 14
+    ('Buhasa MP', 'P&C Buhasa'),         # 15
+]
 
 COMMON_PINS = {'0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
                '1234', '4321', '1122', '1212', '0123', '9876', '5678', '8765'}
@@ -281,6 +304,31 @@ def init_db():
                 pass
         conn.commit()
 
+        # Add new columns if missing (migrations)
+        for alter in [
+            'ALTER TABLE projects ADD COLUMN region TEXT',
+            'ALTER TABLE users ADD COLUMN email TEXT',
+            'ALTER TABLE users ADD COLUMN designation TEXT',
+            'ALTER TABLE attendance ADD COLUMN scanner_email TEXT',
+            'ALTER TABLE attendance ADD COLUMN scanner_designation TEXT',
+        ]:
+            try:
+                db_execute(conn, alter)
+                conn.commit()
+            except Exception:
+                pass
+
+        # Seed 15 areas as projects (each area = one project, one site)
+        for area_name, region in AREAS:
+            existing = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
+            if not existing:
+                db_execute(conn, 'INSERT INTO projects (name, region, active) VALUES (?, ?, 1)', (area_name, region))
+                conn.commit()
+                proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
+                if proj:
+                    db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (area_name, proj['id']))
+                    conn.commit()
+
         user = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
         count = user['c'] if isinstance(user, dict) else user[0]
         if count == 0:
@@ -345,8 +393,9 @@ def get_current_user():
 
 
 def get_user_projects(conn, user_id, role):
-    if role in ('executive', 'admin'):
-        return None
+    """Site isolation: each area’s data is separate. Executive and Manager see all; Scanner/Focal Point see only their assigned areas."""
+    if role in ('executive', 'admin', 'manager'):
+        return None  # see all
     rows = db_fetchall(conn, 'SELECT project_id FROM user_project_access WHERE user_id = ?', (user_id,))
     return [r['project_id'] for r in rows]
 
@@ -501,6 +550,7 @@ def login():
             'user': {
                 'id': user['id'], 'username': user['username'],
                 'display_name': user['display_name'], 'role': user['role'],
+                'email': user.get('email') or '', 'designation': user.get('designation') or '',
                 'must_change_pin': bool(user.get('must_change_pin')),
                 'totp_enabled': bool(user.get('totp_enabled')),
                 'allowed_projects': allowed
@@ -558,6 +608,7 @@ def verify_2fa():
             'user': {
                 'id': pending['user_id'], 'username': pending['username'],
                 'display_name': pending['display_name'], 'role': pending['role'],
+                'email': pending.get('email') or '', 'designation': pending.get('designation') or '',
                 'must_change_pin': bool(pending.get('must_change_pin')),
                 'totp_enabled': True,
                 'allowed_projects': allowed
@@ -619,6 +670,7 @@ def auth_me():
     return jsonify({
         'id': request.user['id'], 'username': request.user['username'],
         'display_name': request.user['display_name'], 'role': request.user['role'],
+        'email': request.user.get('email') or '', 'designation': request.user.get('designation') or '',
         'must_change_pin': bool(request.user.get('must_change_pin')),
         'totp_enabled': bool(request.user.get('totp_enabled')),
         'allowed_projects': allowed
@@ -697,7 +749,7 @@ def api_users():
     conn = get_db()
     try:
         rows = db_fetchall(conn, '''
-            SELECT id, username, display_name, role, active, must_change_pin,
+            SELECT id, username, display_name, email, designation, role, active, must_change_pin,
                    failed_attempts, locked_until, totp_enabled, created_at, last_login
             FROM users ORDER BY role, display_name
         ''')
@@ -731,16 +783,26 @@ def api_add_user():
     if request.user['role'] != 'executive' and role in ('executive', 'admin'):
         return jsonify({'success': False, 'message': 'Only executives can create admin/executive users'}), 403
 
+    email = data.get('email', '').strip()
+    designation = data.get('designation', '').strip()
+    if role in ('scanner', 'focal_point'):
+        if not email:
+            return jsonify({'success': False, 'message': 'Email required for scanner/focal point'}), 400
+        if not designation:
+            return jsonify({'success': False, 'message': 'Designation required for scanner/focal point'}), 400
+    if role in ('scanner', 'focal_point') and not project_ids:
+        return jsonify({'success': False, 'message': 'Assign at least one area for scanner/focal point'}), 400
+
     conn = get_db()
     try:
         db_execute(conn, '''
-            INSERT INTO users (username, display_name, pin_hash, role, must_change_pin)
-            VALUES (?, ?, ?, ?, 1)
-        ''', (username, display_name, hash_pin(pin), role))
+            INSERT INTO users (username, display_name, email, designation, pin_hash, role, must_change_pin)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        ''', (username, display_name, email or None, designation or None, hash_pin(pin), role))
         conn.commit()
 
         user = db_fetchone(conn, 'SELECT id FROM users WHERE username = ?', (username,))
-        if project_ids and role not in ('executive', 'admin'):
+        if project_ids and role not in ('executive', 'admin', 'manager'):
             for pid in project_ids:
                 try:
                     db_execute(conn, 'INSERT INTO user_project_access (user_id, project_id) VALUES (?, ?)',
@@ -771,6 +833,10 @@ def api_update_user(user_id):
             db_execute(conn, 'UPDATE users SET role = ? WHERE id = ?', (data['role'], user_id))
         if 'display_name' in data:
             db_execute(conn, 'UPDATE users SET display_name = ? WHERE id = ?', (data['display_name'], user_id))
+        if 'email' in data:
+            db_execute(conn, 'UPDATE users SET email = ? WHERE id = ?', (data['email'], user_id))
+        if 'designation' in data:
+            db_execute(conn, 'UPDATE users SET designation = ? WHERE id = ?', (data['designation'], user_id))
         if 'project_ids' in data:
             db_execute(conn, 'DELETE FROM user_project_access WHERE user_id = ?', (user_id,))
             for pid in data['project_ids']:
@@ -932,6 +998,29 @@ def api_import_csv():
     return jsonify({'success': True, 'count': count, 'message': msg})
 
 
+@app.route('/api/import-excel', methods=['POST'])
+@require_role('executive', 'admin')
+def api_import_excel():
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': 'No file'}), 400
+    f = request.files['file']
+    if not f.filename or not f.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'message': 'Upload an .xlsx file'}), 400
+    region = request.form.get('region', 'P&C BAB/NEB').strip()
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.xlsx', delete=False) as tmp:
+        f.save(tmp.name)
+        tmp_path = tmp.name
+    try:
+        count, msg = import_excel(tmp_path, region=region)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    audit(request.user['id'], 'excel_imported', msg)
+    return jsonify({'success': True, 'count': count, 'message': msg})
+
+
 # ============================================================
 # EMPLOYEES / SCAN / HEADCOUNT (project-scoped)
 # ============================================================
@@ -978,15 +1067,30 @@ def api_scan():
     project_id = data.get('project_id')
     site_id = data.get('site_id')
     session = data.get('session', '').upper()
+    qr_data = (data.get('qr_data') or '').strip()
     user = request.user
 
-    if not employee_no or not project_id or not site_id or session not in ('AM', 'PM'):
+    # Accept unique QR payload: "project_id|employee_no"
+    if qr_data and '|' in qr_data:
+        parts = qr_data.split('|', 1)
+        try:
+            project_id = int(parts[0])
+            employee_no = parts[1].strip()
+        except (ValueError, IndexError):
+            pass
+
+    VALID_SESSIONS = ('AM', 'PM', 'EV')  # 9 AM, 2 PM, 6 PM
+    if not employee_no or not project_id or not site_id or session not in VALID_SESSIONS:
         return jsonify({'success': False, 'message': 'Missing fields'}), 400
+
+    # Focal points (ADNOC Onshore): view-only, cannot scan
+    if user.get('role') == 'focal_point':
+        return jsonify({'success': False, 'message': 'View-only access. You cannot scan.'}), 403
 
     conn = get_db()
     try:
         if not check_project_access(conn, user, project_id):
-            return jsonify({'success': False, 'message': 'No access to this project'}), 403
+            return jsonify({'success': False, 'message': 'No access to this area'}), 403
 
         site = db_fetchone(conn, 'SELECT id FROM sites WHERE id = ? AND project_id = ?', (site_id, project_id))
         if not site:
@@ -1002,9 +1106,12 @@ def api_scan():
         if existing:
             return jsonify({'success': False, 'duplicate': True, 'message': f'{emp["name"]} already scanned for {session}', 'employee': emp})
 
-        db_execute(conn, '''INSERT INTO attendance (employee_id, employee_no, project_id, site_id, scan_date, session, supervisor_id, supervisor_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (emp['id'], employee_no, project_id, site_id, today, session, user['id'], user['display_name']))
+        # Record scanner identity (name, email, designation) on every scan
+        scanner_email = user.get('email') or ''
+        scanner_designation = user.get('designation') or ''
+        db_execute(conn, '''INSERT INTO attendance (employee_id, employee_no, project_id, site_id, scan_date, session, supervisor_id, supervisor_name, scanner_email, scanner_designation)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (emp['id'], employee_no, project_id, site_id, today, session, user['id'], user['display_name'], scanner_email, scanner_designation))
         conn.commit()
 
         count = db_fetchone(conn, 'SELECT COUNT(*) as c FROM attendance WHERE project_id = ? AND site_id = ? AND scan_date = ? AND session = ?',
@@ -1044,7 +1151,7 @@ def api_headcount():
             if key not in results:
                 ec = db_fetchone(conn, '''SELECT COUNT(*) as c FROM employees e JOIN projects p ON p.id = e.project_id
                     WHERE e.active = 1 AND p.name = ? AND e.work_location = ?''', (row['project_name'], row['site_name']))
-                results[key] = {'project': row['project_name'], 'site': row['site_name'], 'total_employees': ec['c'], 'AM': 0, 'PM': 0}
+                results[key] = {'project': row['project_name'], 'site': row['site_name'], 'total_employees': ec['c'], 'AM': 0, 'PM': 0, 'EV': 0}
             results[key][row['session']] = row['count']
 
         tq = 'SELECT COUNT(*) as c FROM employees e WHERE e.active = 1'
@@ -1068,7 +1175,7 @@ def api_headcount_detail():
 
     conn = get_db()
     try:
-        query = '''SELECT e.name, e.employee_no, e.designation, e.discipline, a.session, a.scanned_at, a.supervisor_name
+        query = '''SELECT e.name, e.employee_no, e.designation, e.discipline, a.session, a.scanned_at, a.supervisor_name, a.scanner_email, a.scanner_designation
             FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.scan_date = ?'''
         params = [scan_date]
         if project_id:
@@ -1127,27 +1234,23 @@ def api_stats():
             ep.append(project_id)
         eq, ep = apply_project_filter(conn, eq, ep, request.user, 'e')
 
-        aq = "SELECT COUNT(DISTINCT employee_no) as c FROM attendance a WHERE a.scan_date = ? AND a.session = 'AM'"
-        ap = [today]
-        if project_id:
-            aq += ' AND a.project_id = ?'
-            ap.append(project_id)
-        aq, ap = apply_project_filter(conn, aq, ap, request.user)
-
-        pq = "SELECT COUNT(DISTINCT employee_no) as c FROM attendance a WHERE a.scan_date = ? AND a.session = 'PM'"
-        pp = [today]
-        if project_id:
-            pq += ' AND a.project_id = ?'
-            pp.append(project_id)
-        pq, pp = apply_project_filter(conn, pq, pp, request.user)
+        def count_session(session_name):
+            q = "SELECT COUNT(DISTINCT employee_no) as c FROM attendance a WHERE a.scan_date = ? AND a.session = ?"
+            params = [today, session_name]
+            if project_id:
+                q += ' AND a.project_id = ?'
+                params.append(project_id)
+            q, params = apply_project_filter(conn, q, params, request.user)
+            return db_fetchone(conn, q, params)['c']
 
         total_emp = db_fetchone(conn, eq, ep)['c']
-        today_am = db_fetchone(conn, aq, ap)['c']
-        today_pm = db_fetchone(conn, pq, pp)['c']
+        today_am = count_session('AM')
+        today_pm = count_session('PM')
+        today_ev = count_session('EV')
         total_projects = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects WHERE active = 1')['c']
     finally:
         conn.close()
-    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_pm': today_pm, 'total_projects': total_projects, 'date': today})
+    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_pm': today_pm, 'today_ev': today_ev, 'total_projects': total_projects, 'date': today})
 
 
 # ============================================================
@@ -1160,21 +1263,23 @@ def api_qrcodes_batch():
     conn = get_db()
     try:
         project_id = request.args.get('project_id', '')
-        query = 'SELECT employee_no, name, designation, discipline, work_location FROM employees e WHERE e.active = 1'
+        query = 'SELECT e.project_id, e.employee_no, e.name, e.designation, e.discipline, e.work_location FROM employees e WHERE e.active = 1'
         params = []
         if project_id:
             query += ' AND e.project_id = ?'
             params.append(project_id)
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
-        query += ' ORDER BY name'
+        query += ' ORDER BY e.name'
         employees = db_fetchall(conn, query, params)
     finally:
         conn.close()
 
+    # Unique QR per person: encode project_id|employee_no so each code is globally unique
     results = []
     for emp in employees:
+        qr_payload = f"{emp['project_id']}|{emp['employee_no']}"
         qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=3)
-        qr.add_data(emp['employee_no'])
+        qr.add_data(qr_payload)
         qr.make(fit=True)
         buf = BytesIO()
         qr.make_image(fill_color="black", back_color="white").save(buf, format='PNG')
@@ -1225,7 +1330,7 @@ def api_export():
         project_id = request.args.get('project_id')
 
         query = '''SELECT e.employee_no, e.name, e.designation, e.discipline, e.nationality, e.work_location,
-            e.subcontractor, p.name as project_name, a.session, a.scan_date, a.scanned_at, a.supervisor_name
+            e.subcontractor, p.name as project_name, a.session, a.scan_date, a.scanned_at, a.supervisor_name, a.scanner_email, a.scanner_designation
             FROM attendance a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id WHERE a.scan_date = ?'''
         params = [scan_date]
         if project_id:
@@ -1240,11 +1345,11 @@ def api_export():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Project', 'Employee No', 'Name', 'Designation', 'Discipline', 'Nationality',
-                     'Work Location', 'Sub-contractor', 'Session', 'Date', 'Scanned At', 'Supervisor'])
+                     'Work Location', 'Sub-contractor', 'Session', 'Date', 'Scanned At', 'Supervisor', 'Scanner Email', 'Scanner Designation'])
     for r in rows:
         writer.writerow([r['project_name'], r['employee_no'], r['name'], r['designation'], r['discipline'],
                         r['nationality'], r['work_location'], r['subcontractor'], r['session'], r['scan_date'],
-                        r['scanned_at'], r['supervisor_name']])
+                        r['scanned_at'], r['supervisor_name'], r.get('scanner_email') or '', r.get('scanner_designation') or ''])
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
                      as_attachment=True, download_name=f'attendance_{scan_date}.csv')
@@ -1347,6 +1452,135 @@ def import_roster(csv_path=None, project_name=None):
     finally:
         conn.close()
     return count, f"Imported {count} employees into '{project_name}'"
+
+
+def _col_index(header_row, *names):
+    """Find column index by header name (case-insensitive, partial match)."""
+    for i, cell in enumerate(header_row):
+        raw = getattr(cell, 'value', cell) or ''
+        val = str(raw).strip().lower().replace('\n', ' ')
+        for n in names:
+            if n.lower() in val or val in n.lower():
+                return i
+    return -1
+
+
+SHEET_TO_PROJECT = {
+    'NEB-Galfar': 'NEB - Galfar',
+    'NEB_Robtstone': 'NEB - Robtstone',
+    'NEB PETROJET': 'NEB - Petrojet',
+    'NEB BSS TECH': 'NEB - BSS Tech',
+}
+
+def _cell_str(row, idx):
+    if idx < 0 or idx >= len(row) or row[idx] is None:
+        return ''
+    v = row[idx]
+    if hasattr(v, 'strftime'):
+        return v.strftime('%Y-%m-%d')
+    return str(v).strip()
+
+
+def import_excel(xlsx_path, region='P&C BAB/NEB'):
+    """Import 4 NEB sheets from the standard 16-column Excel template."""
+    try:
+        import openpyxl
+    except ImportError:
+        return 0, "Install openpyxl: pip install openpyxl"
+
+    if not os.path.exists(xlsx_path):
+        return 0, "Excel file not found"
+
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+    conn = get_db()
+    total = 0
+    messages = []
+    try:
+        for sheet_name in wb.sheetnames[:4]:
+            ws = wb[sheet_name]
+            project_name = SHEET_TO_PROJECT.get(sheet_name.strip(), f"NEB - {sheet_name.strip()}")
+
+            existing = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (project_name,))
+            if not existing:
+                db_execute(conn, 'INSERT INTO projects (name, region, active) VALUES (?, ?, 1)', (project_name, region))
+                conn.commit()
+            proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (project_name,))
+            project_id = proj['id']
+            site_name = project_name
+            existing_site = db_fetchone(conn, 'SELECT id FROM sites WHERE name = ? AND project_id = ?', (site_name, project_id))
+            if not existing_site:
+                db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (site_name, project_id))
+                conn.commit()
+
+            # Fixed 16-column template:
+            # 0:Srl, 1:Agreement No., 2:Name, 3:Nationality, 4:DOB, 5:Designation,
+            # 6:Physical Work Location, 7:Residing Camp Name, 8:Employee No./Contractor Ref.,
+            # 9:Qualification, 10:Date of Joining, 11:Date of Deployment,
+            # 12:Medical Date, 13:Discipline, 14:Sub-contractor, 15:Remarks
+            count = 0
+            sites_found = set()
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row or len(row) < 9:
+                    continue
+                try:
+                    name = _cell_str(row, 2)
+                    employee_no = _cell_str(row, 8)
+                    if not name or not employee_no:
+                        continue
+                    skip = employee_no.lower()
+                    if skip in ('employee no.', 'contractor ref.', 'employee no', 'none', ''):
+                        continue
+
+                    srl = _cell_str(row, 0)
+                    agreement_no = _cell_str(row, 1)
+                    nationality = _cell_str(row, 3)
+                    dob = _cell_str(row, 4)
+                    designation = _cell_str(row, 5)
+                    work_location = _cell_str(row, 6) or site_name
+                    camp_name = _cell_str(row, 7)
+                    qualification = _cell_str(row, 9)
+                    date_joining = _cell_str(row, 10)
+                    date_deployment = _cell_str(row, 11)
+                    medical_date = _cell_str(row, 12)
+                    discipline = _cell_str(row, 13)
+                    subcontractor = _cell_str(row, 14)
+                    remarks = _cell_str(row, 15)
+
+                    existing_emp = db_fetchone(conn, 'SELECT id FROM employees WHERE employee_no = ? AND project_id = ?', (employee_no, project_id))
+                    if existing_emp:
+                        db_execute(conn, '''UPDATE employees SET srl=?, agreement_no=?, name=?, nationality=?, dob=?,
+                            designation=?, work_location=?, camp_name=?, qualification=?, date_joining=?,
+                            date_deployment=?, medical_date=?, discipline=?, subcontractor=?, remarks=?
+                            WHERE employee_no = ? AND project_id = ?''',
+                            (srl, agreement_no, name, nationality, dob, designation, work_location, camp_name,
+                             qualification, date_joining, date_deployment, medical_date, discipline, subcontractor,
+                             remarks, employee_no, project_id))
+                    else:
+                        db_execute(conn, '''INSERT INTO employees (srl, agreement_no, name, nationality, dob, designation,
+                            work_location, camp_name, employee_no, qualification, date_joining, date_deployment,
+                            medical_date, discipline, subcontractor, remarks, project_id)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                            (srl, agreement_no, name, nationality, dob, designation, work_location, camp_name,
+                             employee_no, qualification, date_joining, date_deployment, medical_date, discipline,
+                             subcontractor, remarks, project_id))
+                    count += 1
+                    if work_location and work_location != site_name:
+                        sites_found.add(work_location)
+                except Exception as e:
+                    print(f"Excel row error ({sheet_name}): {e}")
+
+            for sn in sites_found:
+                if sn:
+                    ex = db_fetchone(conn, 'SELECT id FROM sites WHERE name = ? AND project_id = ?', (sn, project_id))
+                    if not ex:
+                        db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (sn, project_id))
+            conn.commit()
+            total += count
+            messages.append(f"{project_name}: {count} people")
+        wb.close()
+    finally:
+        conn.close()
+    return total, ("Excel import: " + "; ".join(messages)) if messages else "No data imported"
 
 
 # ============================================================
