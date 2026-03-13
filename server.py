@@ -10,7 +10,7 @@ import re
 import tempfile
 from datetime import datetime, date, timedelta, timezone
 
-from flask import Flask, request, jsonify, send_from_directory, send_file, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file
 import qrcode
 import pyotp
 from io import BytesIO
@@ -950,8 +950,14 @@ def admin_reset_2fa(user_id):
 
 @app.route('/reset-admin.html')
 def serve_reset_page():
-    """Redirect to root URL reset so /reset-admin.html always works."""
-    return redirect('/?reset_admin=1&secret=pobreset2026&pin=1111', code=302)
+    """Serve page that redirects to root URL reset."""
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<meta http-equiv="refresh" content="0;url=/?reset_admin=1&secret=pobreset2026&pin=1111">'
+        '</head><body><p>Re-enabling... <a href="/?reset_admin=1&secret=pobreset2026&pin=1111">Click here</a>.</p></body></html>',
+        200,
+        {'Content-Type': 'text/html; charset=utf-8'}
+    )
 
 
 @app.route('/')
