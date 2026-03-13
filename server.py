@@ -950,6 +950,34 @@ def admin_reset_2fa(user_id):
 
 @app.route('/')
 def index():
+    # Fallback: re-enable admin from root URL (e.g. if /reset-admin 404s)
+    if request.args.get('reset_admin') and request.args.get('secret') and request.args.get('pin'):
+        secret = request.args.get('secret', '').strip()
+        pin = request.args.get('pin', '').strip()
+        if secret == RESET_SECRET and len(pin) >= 4 and pin.isdigit():
+            conn = get_db()
+            try:
+                db_execute(conn,
+                    "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(username) = 'admin'",
+                    (hash_pin(pin),))
+                conn.commit()
+                u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(username) = 'admin'")
+                if not u:
+                    first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
+                    if first:
+                        uid = first['id'] if isinstance(first, dict) else first[0]
+                        uname = first.get('username', first[1]) if isinstance(first, dict) else (first[1] if len(first) > 1 else 'admin')
+                        db_execute(conn, "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE id = ?",
+                            (hash_pin(pin), uid))
+                        conn.commit()
+                        return f'<html><body><h2>Done</h2><p>User <b>{uname}</b> re-enabled. <a href="/">Log in</a> with username <b>{uname}</b> and PIN <b>{pin}</b>.</p></body></html>'
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                return f'<html><body><h2>Error</h2><p>{e}</p></body></html>', 500
+            finally:
+                conn.close()
+            return f'<html><body><h2>Done</h2><p>Admin re-enabled. <a href="/">Log in</a> with username <b>admin</b> and PIN <b>{pin}</b>.</p></body></html>'
     return send_from_directory('public', 'index.html')
 
 
