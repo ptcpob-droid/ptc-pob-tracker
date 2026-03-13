@@ -476,6 +476,41 @@ def check_project_access(conn, user, project_id):
 # AUTH ROUTES
 # ============================================================
 
+# One-time re-enable: visit /reset-admin?secret=YOUR_SECRET&pin=1111 in browser (or set RESET_ADMIN_SECRET in env)
+RESET_SECRET = os.environ.get('RESET_ADMIN_SECRET', 'pobreset2026')
+
+@app.route('/reset-admin')
+def page_reset_admin():
+    """Re-enable disabled admin: open in browser: /reset-admin?secret=pobreset2026&pin=1111"""
+    secret = request.args.get('secret', '').strip()
+    pin = request.args.get('pin', '').strip()
+    if secret != RESET_SECRET:
+        return '<html><body><h2>Invalid</h2><p>Wrong secret. Set RESET_ADMIN_SECRET in Render env, or change RESET_SECRET in server.py.</p></body></html>', 400
+    if len(pin) < 4 or not pin.isdigit():
+        return '<html><body><h2>Invalid PIN</h2><p>Use ?pin=1111 (4+ digits)</p></body></html>', 400
+    conn = get_db()
+    try:
+        db_execute(conn,
+            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(username) = 'admin'",
+            (hash_pin(pin),))
+        conn.commit()
+        u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(username) = 'admin'")
+        if not u:
+            first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
+            if first:
+                uid = first['id'] if isinstance(first, dict) else first[0]
+                uname = first.get('username', first[1]) if isinstance(first, dict) else (first[1] if len(first) > 1 else 'admin')
+                db_execute(conn, "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE id = ?",
+                    (hash_pin(pin), uid))
+                conn.commit()
+                return f'<html><body><h2>Done</h2><p>User <b>{uname}</b> re-enabled. <a href="/">Log in</a> with username <b>{uname}</b> and PIN <b>{pin}</b>.</p></body></html>'
+    except Exception as e:
+        conn.rollback()
+        return f'<html><body><h2>Error</h2><p>{e}</p></body></html>', 500
+    finally:
+        conn.close()
+    return f'<html><body><h2>Done</h2><p>Admin re-enabled. <a href="/">Log in</a> with username <b>admin</b> and PIN <b>{pin}</b>.</p></body></html>'
+
 @app.route('/api/reset-admin', methods=['POST'])
 def api_reset_admin():
     """One-time re-enable admin: set RESET_ADMIN_SECRET in Render env, then POST {"secret":"that-value","pin":"1111"}. No auth required."""
