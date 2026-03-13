@@ -490,29 +490,26 @@ def page_reset_admin():
         return '<html><body><h2>Invalid PIN</h2><p>Use ?pin=1111 (4+ digits)</p></body></html>', 400
     conn = get_db()
     try:
-        # Re-enable admin (set PIN + active=1); then ensure ALL users are active so login works
-        db_execute(conn,
-            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(TRIM(username)) = 'admin'",
-            (hash_pin(pin),))
-        conn.commit()
+        # 1) Enable all users
         db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
         conn.commit()
-        u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(TRIM(username)) = 'admin'")
-        if not u:
-            first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
-            if first:
-                uid = first['id'] if isinstance(first, dict) else first[0]
-                uname = first.get('username', first[1]) if isinstance(first, dict) else (first[1] if len(first) > 1 else 'admin')
-                db_execute(conn, "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE id = ?",
-                    (hash_pin(pin), uid))
-                conn.commit()
-                return f'<html><body><h2>Done</h2><p>User <b>{uname}</b> re-enabled. <a href="/">Log in</a> with username <b>{uname}</b> and PIN <b>{pin}</b>.</p></body></html>'
+        # 2) Set PIN for first user (id=1 or lowest id) so you can always log in
+        first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
+        if first:
+            uid = first['id'] if isinstance(first, dict) else first[0]
+            uname = (first.get('username') or first[1]) if isinstance(first, dict) else first[1]
+            db_execute(conn, "UPDATE users SET pin_hash = ?, active = 1, locked_until = NULL, failed_attempts = 0 WHERE id = ?",
+                (hash_pin(pin), uid))
+            conn.commit()
+            uname_str = str(uname) if uname else 'admin'
+            return f'<html><body style="font-family:sans-serif;padding:2rem"><h2>Done</h2><p>Account re-enabled. Log in with:</p><p><b>Username:</b> {uname_str}</p><p><b>PIN:</b> {pin}</p><p><a href="/" style="font-size:1.1rem">Go to login</a></p></body></html>'
     except Exception as e:
-        conn.rollback()
-        return f'<html><body><h2>Error</h2><p>{e}</p></body></html>', 500
+        try: conn.rollback()
+        except Exception: pass
+        return f'<html><body><h2>Error</h2><pre>{e}</pre></body></html>', 500
     finally:
         conn.close()
-    return f'<html><body><h2>Done</h2><p>Admin re-enabled. <a href="/">Log in</a> with username <b>admin</b> and PIN <b>{pin}</b>.</p></body></html>'
+    return f'<html><body><h2>Done</h2><p>Log in with username <b>admin</b> and PIN <b>{pin}</b>. <a href="/">Login</a></p></body></html>'
 
 @app.route('/api/reset-admin', methods=['POST'])
 def api_reset_admin():
@@ -960,29 +957,23 @@ def index():
         if secret == RESET_SECRET and len(pin) >= 4 and pin.isdigit():
             conn = get_db()
             try:
-                db_execute(conn,
-                    "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(TRIM(username)) = 'admin'",
-                    (hash_pin(pin),))
-                conn.commit()
                 db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
                 conn.commit()
-                u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(TRIM(username)) = 'admin'")
-                if not u:
-                    first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
-                    if first:
-                        uid = first['id'] if isinstance(first, dict) else first[0]
-                        uname = first.get('username', first[1]) if isinstance(first, dict) else (first[1] if len(first) > 1 else 'admin')
-                        db_execute(conn, "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE id = ?",
-                            (hash_pin(pin), uid))
-                        conn.commit()
-                        return f'<html><body><h2>Done</h2><p>User <b>{uname}</b> re-enabled. <a href="/">Log in</a> with username <b>{uname}</b> and PIN <b>{pin}</b>.</p></body></html>'
+                first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
+                if first:
+                    uid = first['id'] if isinstance(first, dict) else first[0]
+                    uname = (first.get('username') or first[1]) if isinstance(first, dict) else first[1]
+                    db_execute(conn, "UPDATE users SET pin_hash = ?, active = 1 WHERE id = ?", (hash_pin(pin), uid))
+                    conn.commit()
+                    uname_str = str(uname) if uname else 'admin'
+                    return f'<html><body style="font-family:sans-serif;padding:2rem"><h2>Done</h2><p>Log in with <b>{uname_str}</b> / <b>{pin}</b>. <a href="/">Login</a></p></body></html>'
             except Exception as e:
                 try: conn.rollback()
                 except Exception: pass
-                return f'<html><body><h2>Error</h2><p>{e}</p></body></html>', 500
+                return f'<html><body><h2>Error</h2><pre>{e}</pre></body></html>', 500
             finally:
                 conn.close()
-            return f'<html><body><h2>Done</h2><p>Admin re-enabled. <a href="/">Log in</a> with username <b>admin</b> and PIN <b>{pin}</b>.</p></body></html>'
+            return f'<html><body><h2>Done</h2><p><a href="/">Login</a> with admin / {pin}</p></body></html>'
     return send_from_directory('public', 'index.html')
 
 
