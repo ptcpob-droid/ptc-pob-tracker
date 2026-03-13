@@ -29,7 +29,7 @@ def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute(
-        "UPDATE users SET pin_hash = %s, locked_until = NULL, failed_attempts = 0 WHERE username = 'admin'",
+        "UPDATE users SET pin_hash = %s, locked_until = NULL, failed_attempts = 0, active = 1 WHERE username = 'admin'",
         (hash_pin(new_pin),)
     )
     conn.commit()
