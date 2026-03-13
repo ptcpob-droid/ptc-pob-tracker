@@ -490,11 +490,14 @@ def page_reset_admin():
         return '<html><body><h2>Invalid PIN</h2><p>Use ?pin=1111 (4+ digits)</p></body></html>', 400
     conn = get_db()
     try:
+        # Re-enable admin (set PIN + active=1); then ensure ALL users are active so login works
         db_execute(conn,
-            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(username) = 'admin'",
+            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(TRIM(username)) = 'admin'",
             (hash_pin(pin),))
         conn.commit()
-        u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(username) = 'admin'")
+        db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
+        conn.commit()
+        u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(TRIM(username)) = 'admin'")
         if not u:
             first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
             if first:
@@ -958,10 +961,12 @@ def index():
             conn = get_db()
             try:
                 db_execute(conn,
-                    "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(username) = 'admin'",
+                    "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(TRIM(username)) = 'admin'",
                     (hash_pin(pin),))
                 conn.commit()
-                u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(username) = 'admin'")
+                db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
+                conn.commit()
+                u = db_fetchone(conn, "SELECT id FROM users WHERE LOWER(TRIM(username)) = 'admin'")
                 if not u:
                     first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
                     if first:

@@ -155,7 +155,11 @@ function initLogin() {
                     toast(`Welcome, ${data.user.display_name}`, 'success');
                 }
             } else {
-                errorDiv.textContent = data.message;
+                if (res.status === 403 && data.message && data.message.toLowerCase().includes('disabled')) {
+                    errorDiv.innerHTML = esc(data.message) + ' <a href="/?reset_admin=1&secret=pobreset2026&pin=1111" style="display:block;margin-top:8px;color:var(--primary);font-weight:500">Re-enable this account</a>';
+                } else {
+                    errorDiv.textContent = data.message;
+                }
                 pinInput.value = '';
                 pinInput.focus();
             }
@@ -641,6 +645,11 @@ async function loadDashboard() {
     const [hc, stats] = await Promise.all([api(url), api(su)]);
     if (!stats.total_employees && stats.total_employees !== 0) return;
 
+    const headcountDate = d.value || hc.date || new Date().toISOString().split('T')[0];
+    const dateLabel = formatHeadcountDate(headcountDate);
+    const dateEl = $('#headcount-date-label');
+    if (dateEl) dateEl.textContent = dateLabel ? ` — ${dateLabel}` : '';
+
     const amP = stats.total_employees > 0 ? Math.round(((stats.today_am || 0) / stats.total_employees) * 100) : 0;
     const pmP = stats.total_employees > 0 ? Math.round(((stats.today_pm || 0) / stats.total_employees) * 100) : 0;
     const evP = stats.total_employees > 0 ? Math.round(((stats.today_ev || 0) / stats.total_employees) * 100) : 0;
@@ -653,9 +662,9 @@ async function loadDashboard() {
 
     const tw = $('#headcount-table-wrap');
     if (!hc.sites || hc.sites.length === 0) {
-        tw.innerHTML = '<div class="empty-state">No attendance data for this date</div>';
+        tw.innerHTML = `<div class="empty-state">No attendance data for ${dateLabel || headcountDate}</div>`;
     } else {
-        let h = '<table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>2 PM</th><th>6 PM</th><th>9 AM %</th></tr></thead><tbody>';
+        let h = `<div class="text-dim" style="font-size:0.85rem;margin-bottom:6px">Date: ${dateLabel || headcountDate}</div><table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>2 PM</th><th>6 PM</th><th>9 AM %</th></tr></thead><tbody>`;
         hc.sites.forEach(r => {
             const am = r.AM ?? 0, pm = r.PM ?? 0, ev = r.EV ?? 0;
             const pct = r.total_employees > 0 ? Math.round((am / r.total_employees) * 100) : 0;
@@ -667,9 +676,18 @@ async function loadDashboard() {
     }
 }
 
+function formatHeadcountDate(iso) {
+    if (!iso) return '';
+    const [y, m, day] = iso.split('-');
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${day} ${months[parseInt(m,10)-1]} ${y}`;
+}
+
 async function loadPersonnel(view = 'present') {
     const d = $('#dash-date').value || new Date().toISOString().split('T')[0];
     const p = $('#dash-project').value, s = $('#dash-site').value;
+    const personnelDateEl = $('#personnel-date-label');
+    if (personnelDateEl) personnelDateEl.textContent = formatHeadcountDate(d) ? ` (${formatHeadcountDate(d)})` : '';
     const list = $('#personnel-list');
     list.innerHTML = '<div class="spinner"></div>';
 
@@ -712,10 +730,14 @@ async function loadQRCodes() {
     }
     if (filtered.length === 0) { grid.innerHTML = '<div class="empty-state">No employees found</div>'; return; }
 
-    grid.innerHTML = filtered.map(e => `<div class="qr-card">
+    grid.innerHTML = filtered.map(e => `<div class="qr-card" data-emp="${esc(e.employee_no)}">
         <img src="data:image/png;base64,${e.qr_base64}" alt="QR ${esc(e.employee_no)}">
-        <div class="qr-name">${esc(e.name)}</div><div class="qr-id">${esc(e.employee_no)}</div>
-        <div class="qr-role">${esc(e.designation)} | ${esc(e.discipline)}</div></div>`).join('');
+        <div class="qr-name">${esc(e.name)}</div>
+        <div class="qr-id">${esc(e.employee_no)}</div>
+        <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
+        ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
+        <div class="qr-handout">POB Tracker — present at site</div>
+        </div>`).join('');
 }
 
 // ============================================================
@@ -1001,6 +1023,16 @@ function initTabs() {
             let url = `/api/export/attendance?date=${d}&dl_token=${dlToken}`;
             if ($('#dash-project').value) url += `&project_id=${$('#dash-project').value}`;
             if ($('#dash-site').value) url += `&site_id=${$('#dash-site').value}`;
+            window.open(url, '_blank');
+        } catch (e) {
+            toast('Export failed', 'error');
+        }
+    });
+    $('#btn-export-roster')?.addEventListener('click', async () => {
+        try {
+            const { token: dlToken } = await api('/export/download-token', { method: 'POST' });
+            let url = `/api/export/roster?dl_token=${dlToken}`;
+            if ($('#dash-project').value) url += `&project_id=${$('#dash-project').value}`;
             window.open(url, '_blank');
         } catch (e) {
             toast('Export failed', 'error');
