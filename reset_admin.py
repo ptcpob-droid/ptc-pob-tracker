@@ -29,16 +29,30 @@ def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute(
-        "UPDATE users SET pin_hash = %s, locked_until = NULL, failed_attempts = 0, active = 1 WHERE username = 'admin'",
+        "UPDATE users SET pin_hash = %s, locked_until = NULL, failed_attempts = 0, active = 1 WHERE LOWER(username) = 'admin'",
         (hash_pin(new_pin),)
     )
     conn.commit()
     n = cur.rowcount
+    row = None
+    if n == 0:
+        cur.execute("SELECT id, username FROM users ORDER BY id LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE users SET pin_hash = %s, locked_until = NULL, failed_attempts = 0, active = 1 WHERE id = %s",
+                (hash_pin(new_pin), row[0])
+            )
+            conn.commit()
+            n = cur.rowcount
     conn.close()
     if n:
-        print(f'Admin unlocked and PIN set to {new_pin}. You can log in now.')
+        if row:
+            print(f'User "{row[1]}" (id={row[0]}) unlocked. Log in with username **{row[1]}** and PIN **{new_pin}**.')
+        else:
+            print(f'Admin unlocked. Log in with username **admin** and PIN **{new_pin}**.')
     else:
-        print('No admin user found.')
+        print('No user found in database.')
     sys.exit(0 if n else 1)
 
 if __name__ == '__main__':

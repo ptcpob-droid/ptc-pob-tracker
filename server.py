@@ -476,6 +476,36 @@ def check_project_access(conn, user, project_id):
 # AUTH ROUTES
 # ============================================================
 
+@app.route('/api/reset-admin', methods=['POST'])
+def api_reset_admin():
+    """One-time re-enable admin: set RESET_ADMIN_SECRET in Render env, then POST {"secret":"that-value","pin":"1111"}. No auth required."""
+    data = request.json or {}
+    secret = (data.get('secret') or '').strip()
+    new_pin = (data.get('pin') or '').strip()
+    expected = os.environ.get('RESET_ADMIN_SECRET', '').strip()
+    if not expected or secret != expected:
+        return jsonify({'success': False, 'message': 'Invalid'}), 400
+    if len(new_pin) < 4 or not new_pin.isdigit():
+        return jsonify({'success': False, 'message': 'PIN must be 4+ digits'}), 400
+    conn = get_db()
+    try:
+        cur = db_execute(conn,
+            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE username = ?",
+            (hash_pin(new_pin), 'admin'))
+        conn.commit()
+        if USE_POSTGRES and hasattr(cur, 'rowcount'):
+            n = cur.rowcount
+        else:
+            n = conn.total_changes if hasattr(conn, 'total_changes') else 1
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        conn.close()
+    return jsonify({'success': True, 'message': f'Admin re-enabled. Log in with username **admin** and PIN **{new_pin}**. Remove RESET_ADMIN_SECRET from env after use.'})
+
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     if not check_ip_rate_limit(request.remote_addr):
@@ -1263,7 +1293,8 @@ def api_qrcodes_batch():
     conn = get_db()
     try:
         project_id = request.args.get('project_id', '')
-        query = 'SELECT e.project_id, e.employee_no, e.name, e.designation, e.discipline, e.work_location FROM employees e WHERE e.active = 1'
+        query = '''SELECT e.project_id, e.employee_no, e.name, e.designation, e.discipline, e.work_location, p.name as project_name
+            FROM employees e JOIN projects p ON p.id = e.project_id WHERE e.active = 1'''
         params = []
         if project_id:
             query += ' AND e.project_id = ?'
@@ -1353,6 +1384,65 @@ def api_export():
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
                      as_attachment=True, download_name=f'attendance_{scan_date}.csv')
+
+
+# Full roster export: all required columns (Agreement No., Name, Nationality, DOB, Designation, Physical Work Location, Residing Camp, Employee No., Qualification, Date of Joining, Date of Deployment, Latest Periodic Medical, Discipline, Sub-contractor, Remarks)
+@app.route('/api/export/roster')
+def api_export_roster():
+    dl_token = request.args.get('dl_token', '')
+    if not dl_token:
+        return jsonify({'error': 'Missing download token'}), 401
+    conn = get_db()
+    try:
+        if USE_POSTGRES:
+            tok_row = db_fetchone(conn, '''
+                SELECT d.user_id, u.* FROM download_tokens d JOIN users u ON u.id = d.user_id
+                WHERE d.token = ? AND d.expires_at > NOW()
+            ''', (dl_token,))
+        else:
+            tok_row = db_fetchone(conn, '''
+                SELECT d.user_id, u.* FROM download_tokens d JOIN users u ON u.id = d.user_id
+                WHERE d.token = ? AND d.expires_at > datetime('now')
+            ''', (dl_token,))
+        if not tok_row:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        db_execute(conn, 'DELETE FROM download_tokens WHERE token = ?', (dl_token,))
+        conn.commit()
+        project_id = request.args.get('project_id', '')
+        query = '''SELECT e.srl, e.agreement_no, e.name, e.nationality, e.dob, e.designation,
+            e.work_location, e.camp_name, e.employee_no, e.qualification, e.date_joining,
+            e.date_deployment, e.medical_date, e.discipline, e.subcontractor, e.remarks,
+            p.name as project_name
+            FROM employees e JOIN projects p ON p.id = e.project_id WHERE e.active = 1'''
+        params = []
+        if project_id:
+            query += ' AND e.project_id = ?'
+            params.append(project_id)
+        query, params = apply_project_filter(conn, query, params, tok_row)
+        query += ' ORDER BY p.name, e.name'
+        rows = db_fetchall(conn, query, params)
+    finally:
+        conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        'Srl', 'Agreement No.', 'Name', 'Nationality', 'DOB', 'Designation',
+        'Physical Work Location (Site / City Name)', 'Residing Camp Name & Location',
+        'Employee No. / Contractor Ref.', 'Qualification', 'Date of Joining',
+        'Date of Deployment with NQC Projects', 'Latest Periodic Medical conducted (Date)',
+        'Discipline (Civil/Electrical/Mechanical/Others)', 'Sub-contractor/Manpower Supplier', 'Remarks', 'Project'
+    ])
+    for r in rows:
+        writer.writerow([
+            r.get('srl') or '', r.get('agreement_no') or '', r.get('name') or '', r.get('nationality') or '',
+            r.get('dob') or '', r.get('designation') or '', r.get('work_location') or '', r.get('camp_name') or '',
+            r.get('employee_no') or '', r.get('qualification') or '', r.get('date_joining') or '',
+            r.get('date_deployment') or '', r.get('medical_date') or '', r.get('discipline') or '',
+            r.get('subcontractor') or '', r.get('remarks') or '', r.get('project_name') or ''
+        ])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
+                     as_attachment=True, download_name='roster_full.csv')
 
 
 @app.route('/api/audit')
