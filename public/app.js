@@ -118,61 +118,50 @@ function doLogout(expired = false) {
 function initLogin() {
     const loginBtn = $('#login-btn');
     const usernameInput = $('#login-username');
-    const pinInput = $('#login-pin');
+    const totpInput = $('#login-totp');
     const errorDiv = $('#login-error');
 
     async function doLogin() {
         errorDiv.textContent = '';
         const username = usernameInput.value.trim();
-        const pin = pinInput.value.trim();
-        if (!username || !pin) { errorDiv.textContent = 'Enter username and PIN'; return; }
+        const totp_code = totpInput.value.trim();
+        if (!username || !totp_code) { errorDiv.textContent = 'Enter username and 2FA code'; return; }
+        if (totp_code.length !== 6 || !/^\d+$/.test(totp_code)) { errorDiv.textContent = 'Enter the 6-digit code from your authenticator app'; return; }
 
         loginBtn.disabled = true;
-        loginBtn.textContent = 'Logging in...';
+        loginBtn.textContent = 'Signing in...';
 
         try {
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, pin })
+                body: JSON.stringify({ username, totp_code })
             });
             const data = await res.json();
 
-            if (data.success && data.totp_required) {
-                pinInput.value = '';
-                show2FAScreen(data.pending_token);
-            } else if (data.success) {
+            if (data.success) {
                 state.token = data.token;
                 state.user = data.user;
                 localStorage.setItem('pob_token', data.token);
                 localStorage.setItem('pob_user', JSON.stringify(data.user));
-                pinInput.value = '';
-
-                if (data.user.must_change_pin) {
-                    showChangePinScreen();
-                } else {
-                    showApp();
-                    toast(`Welcome, ${data.user.display_name}`, 'success');
-                }
+                totpInput.value = '';
+                showApp();
+                toast(`Welcome, ${data.user.display_name}`, 'success');
             } else {
-                if (res.status === 403 && data.message && data.message.toLowerCase().includes('disabled')) {
-                    errorDiv.innerHTML = esc(data.message) + ' <a href="/?reset_admin=1&secret=pobreset2026&pin=1111" style="display:block;margin-top:8px;color:var(--primary);font-weight:500">Re-enable this account</a>';
-                } else {
-                    errorDiv.textContent = data.message;
-                }
-                pinInput.value = '';
-                pinInput.focus();
+                errorDiv.textContent = data.message;
+                totpInput.value = '';
+                totpInput.focus();
             }
         } catch (e) {
             errorDiv.textContent = 'Connection error. Is the server running?';
         }
         loginBtn.disabled = false;
-        loginBtn.textContent = 'Login';
+        loginBtn.textContent = 'Sign in';
     }
 
     loginBtn.addEventListener('click', doLogin);
-    pinInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') doLogin(); });
-    usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') pinInput.focus(); });
+    totpInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') doLogin(); });
+    usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') totpInput.focus(); });
 
     $('#user-badge').addEventListener('click', () => {
         if (confirm('Logout?')) doLogout();
@@ -298,11 +287,11 @@ async function open2FASetup() {
 }
 
 async function disable2FA() {
-    const pin = prompt('Enter your PIN to disable 2FA:');
-    if (!pin) return;
-    const res = await api('/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ pin }) });
+    const totp_code = prompt('Enter your current 6-digit 2FA code to disable 2FA:');
+    if (!totp_code || totp_code.length !== 6) return;
+    const res = await api('/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ totp_code: totp_code.trim() }) });
     if (res.success) {
-        toast('2FA disabled', 'success');
+        toast('2FA disabled. You will need to set it up again to sign in.', 'success');
         state.user.totp_enabled = false;
         localStorage.setItem('pob_user', JSON.stringify(state.user));
         if (typeof loadAdmin === 'function') loadAdmin();
@@ -763,16 +752,13 @@ async function loadAdmin() {
         return `<div class="scan-item">
         <div>
             <div class="scan-item-name">${esc(u.display_name)} ${roleBadge(u.role)}
-                ${u.totp_enabled ? '<span class="badge badge-2fa">2FA</span>' : ''}
-                ${u.active ? '' : '<span class="badge badge-danger">DISABLED</span>'}
-                ${u.locked_until ? '<span class="badge badge-warning">LOCKED</span>' : ''}</div>
+                ${u.totp_enabled ? '<span class="badge badge-2fa">2FA</span>' : ''}</div>
             <div class="scan-item-sub">@${esc(u.username)}${contact ? ' | ' + contact : ''} | ${projAccess} | Last: ${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'never'}</div>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button class="btn btn-sm btn-outline" data-action="access" data-idx="${idx}">Access</button>
             <button class="btn btn-sm btn-outline" data-action="resetpin" data-id="${u.id}">Reset PIN</button>
             ${u.totp_enabled ? `<button class="btn btn-sm btn-outline" data-action="reset2fa" data-id="${u.id}">Reset 2FA</button>` : ''}
-            <button class="btn btn-sm ${u.active ? 'btn-danger' : 'btn-success'}" data-action="toggle" data-id="${u.id}" data-active="${u.active ? 0 : 1}">${u.active ? 'Disable' : 'Enable'}</button>
         </div>
     </div>`}).join('');
 
@@ -789,11 +775,6 @@ async function loadAdmin() {
             resetUserPin(id);
         } else if (action === 'reset2fa') {
             adminReset2FA(id);
-        } else if (action === 'toggle') {
-            const active = parseInt(btn.dataset.active);
-            await api(`/users/${id}`, { method: 'PUT', body: JSON.stringify({ active: !!active }) });
-            toast(active ? 'User enabled' : 'User disabled', 'success');
-            loadAdmin();
         }
     };
 
@@ -840,10 +821,23 @@ async function resetUserPin(userId) {
 }
 
 async function adminReset2FA(userId) {
-    if (!confirm('This will disable 2FA for this user. They can re-enable it later.')) return;
+    if (!confirm('Generate a new 2FA secret for this user? They will need to add it to their authenticator app to sign in.')) return;
     const res = await api(`/users/${userId}/reset-2fa`, { method: 'POST' });
-    toast(res.message || 'Done', res.success ? 'success' : 'error');
+    if (res.success && res.totp_setup) {
+        showTotpGiveModal(res.totp_setup.secret, res.totp_setup.uri);
+        toast(res.message, 'success');
+    } else {
+        toast(res.message || 'Done', res.success ? 'success' : 'error');
+    }
     loadAdmin();
+}
+
+function showTotpGiveModal(secret, uri) {
+    const modal = $('#totp-give-modal');
+    $('#totp-give-secret').textContent = secret;
+    $('#totp-give-qr').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(uri);
+    modal.classList.remove('hidden');
+    $('#totp-give-close').onclick = () => modal.classList.add('hidden');
 }
 
 async function editUserAccess(userId, name, role) {
@@ -932,9 +926,9 @@ function initAdmin() {
         const display_name = $('#new-displayname').value.trim();
         const email = $('#new-useremail').value.trim();
         const designation = $('#new-userdesignation').value.trim();
-        const pin = $('#new-userpin').value.trim();
+        const pin = ($('#new-userpin') && $('#new-userpin').value) ? $('#new-userpin').value.trim() : '';
         const role = $('#new-userrole').value;
-        if (!username || !display_name || !pin) { toast('Username, name and PIN required', 'error'); return; }
+        if (!username || !display_name) { toast('Username and name required', 'error'); return; }
         if ((role === 'scanner' || role === 'focal_point') && !email) { toast('Email required for Scanner/Focal Point', 'error'); return; }
         if ((role === 'scanner' || role === 'focal_point') && !designation) { toast('Designation required for Scanner/Focal Point', 'error'); return; }
         let project_ids = [];
@@ -942,10 +936,12 @@ function initAdmin() {
             project_ids = Array.from(document.querySelectorAll('#new-user-areas input:checked')).map(cb => parseInt(cb.value));
             if (!project_ids.length) { toast('Select at least one area for Scanner/Focal Point', 'error'); return; }
         }
-        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, email, designation, pin, role, project_ids }) });
+        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, email, designation, pin: pin || '1234', role, project_ids }) });
         if (res.success) {
+            if (res.totp_setup) showTotpGiveModal(res.totp_setup.secret, res.totp_setup.uri);
             toast(res.message, 'success');
-            $('#new-username').value = ''; $('#new-displayname').value = ''; $('#new-useremail').value = ''; $('#new-userdesignation').value = ''; $('#new-userpin').value = '';
+            $('#new-username').value = ''; $('#new-displayname').value = ''; $('#new-useremail').value = ''; $('#new-userdesignation').value = '';
+            if ($('#new-userpin')) $('#new-userpin').value = '';
             if (areaWrap) areaWrap.querySelectorAll('input').forEach(cb => cb.checked = false);
             loadAdmin();
         } else {

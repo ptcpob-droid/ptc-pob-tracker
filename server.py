@@ -26,8 +26,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 USE_POSTGRES = DATABASE_URL.startswith('postgres')
 ADMIN_DEFAULT_PIN = os.environ.get('ADMIN_PIN', '1234')
 IS_PRODUCTION = os.environ.get('RENDER', '') or os.environ.get('PRODUCTION', '')
-MAX_LOGIN_ATTEMPTS = 5
-LOCKOUT_MINUTES = 15
+# No account lockout or disabling: login always allowed on correct credentials
 
 ROSTER_CSV = os.path.join(os.path.dirname(__file__), 'adnoc_workforce_roste.csv')
 
@@ -68,6 +67,18 @@ COMMON_PINS = {'0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '
 LOGIN_ATTEMPTS = {}
 LOGIN_WINDOW = 60
 LOGIN_MAX_PER_IP = 20
+
+# ============================================================
+# HTTPS REDIRECT (when behind proxy e.g. Render)
+# ============================================================
+
+@app.before_request
+def redirect_http_to_https():
+    """Redirect HTTP to HTTPS when the app is behind a proxy that sets X-Forwarded-Proto."""
+    if not request.is_secure and request.headers.get('X-Forwarded-Proto') == 'http':
+        from flask import redirect
+        return redirect(request.url.replace('http://', 'https://', 1), code=301)
+
 
 # ============================================================
 # SECURITY HEADERS
@@ -284,9 +295,10 @@ def init_db():
         for sql in tables:
             try:
                 db_execute(conn, sql)
+                conn.commit()
             except Exception as e:
+                conn.rollback()
                 print(f"  Table warning: {e}")
-        conn.commit()
 
         indexes = [
             'CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(scan_date)',
@@ -300,9 +312,9 @@ def init_db():
         for sql in indexes:
             try:
                 db_execute(conn, sql)
+                conn.commit()
             except Exception:
-                pass
-        conn.commit()
+                conn.rollback()
 
         # Add new columns if missing (migrations)
         for alter in [
@@ -316,7 +328,7 @@ def init_db():
                 db_execute(conn, alter)
                 conn.commit()
             except Exception:
-                pass
+                conn.rollback()
 
         # Seed 15 areas as projects (each area = one project, one site)
         for area_name, region in AREAS:
@@ -332,22 +344,39 @@ def init_db():
         user = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
         count = user['c'] if isinstance(user, dict) else user[0]
         if count == 0:
+            totp_secret = pyotp.random_base32()
             db_execute(conn, '''
-                INSERT INTO users (username, display_name, pin_hash, role, must_change_pin)
-                VALUES (?, ?, ?, 'executive', 1)
-            ''', ('admin', 'Administrator', hash_pin(ADMIN_DEFAULT_PIN)))
+                INSERT INTO users (username, display_name, pin_hash, role, must_change_pin, totp_secret, totp_enabled)
+                VALUES (?, ?, ?, 'executive', 0, ?, 1)
+            ''', ('admin', 'Administrator', hash_pin('0000'), totp_secret))
             conn.commit()
-            if not IS_PRODUCTION:
-                print(f"  Default admin: username='admin', PIN='{ADMIN_DEFAULT_PIN}'")
-            else:
-                print("  Default admin created (username='admin')")
+            uri = pyotp.TOTP(totp_secret).provisioning_uri(name='admin', issuer_name='PTC POB Tracker')
+            print('  Default admin (2FA only): username=admin')
+            print(f'  Add this secret to your authenticator app: {totp_secret}')
+            print(f'  Or scan QR for: {uri[:60]}...')
+        else:
+            # Ensure any user without 2FA gets a secret so they can sign in (2FA only)
+            rows = db_fetchall(conn, 'SELECT id, username FROM users WHERE totp_secret IS NULL OR totp_enabled = 0')
+            for row in rows:
+                uid = row['id'] if isinstance(row, dict) else row[0]
+                uname = (row.get('username') or row[1]) if isinstance(row, dict) else row[1]
+                new_secret = pyotp.random_base32()
+                db_execute(conn, 'UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE id = ?', (new_secret, uid))
+                conn.commit()
+                print(f'  2FA set for user {uname}. Add to authenticator: {new_secret}')
     finally:
         conn.close()
 
 
 # Run init_db at import time so gunicorn/production picks it up
+# If it fails (e.g. Postgres transaction state), app still starts so / and /reset-admin work
 print("Initializing database...")
-init_db()
+try:
+    init_db()
+except Exception as e:
+    print(f"  init_db warning: {e}")
+    import traceback
+    traceback.print_exc()
 
 
 # ============================================================
@@ -379,13 +408,13 @@ def get_current_user():
             row = db_fetchone(conn, '''
                 SELECT u.* FROM users u
                 JOIN auth_tokens t ON t.user_id = u.id
-                WHERE t.token = ? AND t.expires_at > NOW() AND u.active = 1
+                WHERE t.token = ? AND t.expires_at > NOW()
             ''', (token,))
         else:
             row = db_fetchone(conn, '''
                 SELECT u.* FROM users u
                 JOIN auth_tokens t ON t.user_id = u.id
-                WHERE t.token = ? AND t.expires_at > datetime('now') AND u.active = 1
+                WHERE t.token = ? AND t.expires_at > datetime('now')
             ''', (token,))
         return row
     finally:
@@ -476,128 +505,41 @@ def check_project_access(conn, user, project_id):
 # AUTH ROUTES
 # ============================================================
 
-# One-time re-enable: visit /reset-admin?secret=YOUR_SECRET&pin=1111 in browser (or set RESET_ADMIN_SECRET in env)
-RESET_SECRET = os.environ.get('RESET_ADMIN_SECRET', 'pobreset2026')
-
-@app.route('/reset-admin')
-def page_reset_admin():
-    """Re-enable disabled admin: open in browser: /reset-admin?secret=pobreset2026&pin=1111"""
-    secret = request.args.get('secret', '').strip()
-    pin = request.args.get('pin', '').strip()
-    if secret != RESET_SECRET:
-        return '<html><body><h2>Invalid</h2><p>Wrong secret. Set RESET_ADMIN_SECRET in Render env, or change RESET_SECRET in server.py.</p></body></html>', 400
-    if len(pin) < 4 or not pin.isdigit():
-        return '<html><body><h2>Invalid PIN</h2><p>Use ?pin=1111 (4+ digits)</p></body></html>', 400
-    conn = get_db()
-    try:
-        # 1) Enable all users
-        db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
-        conn.commit()
-        # 2) Set PIN for first user (id=1 or lowest id) so you can always log in
-        first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
-        if first:
-            uid = first['id'] if isinstance(first, dict) else first[0]
-            uname = (first.get('username') or first[1]) if isinstance(first, dict) else first[1]
-            db_execute(conn, "UPDATE users SET pin_hash = ?, active = 1, locked_until = NULL, failed_attempts = 0 WHERE id = ?",
-                (hash_pin(pin), uid))
-            conn.commit()
-            uname_str = str(uname) if uname else 'admin'
-            return f'<html><body style="font-family:sans-serif;padding:2rem"><h2>Done</h2><p>Account re-enabled. Log in with:</p><p><b>Username:</b> {uname_str}</p><p><b>PIN:</b> {pin}</p><p><a href="/" style="font-size:1.1rem">Go to login</a></p></body></html>'
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        return f'<html><body><h2>Error</h2><pre>{e}</pre></body></html>', 500
-    finally:
-        conn.close()
-    return f'<html><body><h2>Done</h2><p>Log in with username <b>admin</b> and PIN <b>{pin}</b>. <a href="/">Login</a></p></body></html>'
-
-@app.route('/api/reset-admin', methods=['POST'])
-def api_reset_admin():
-    """One-time re-enable admin: set RESET_ADMIN_SECRET in Render env, then POST {"secret":"that-value","pin":"1111"}. No auth required."""
-    data = request.json or {}
-    secret = (data.get('secret') or '').strip()
-    new_pin = (data.get('pin') or '').strip()
-    expected = os.environ.get('RESET_ADMIN_SECRET', '').strip()
-    if not expected or secret != expected:
-        return jsonify({'success': False, 'message': 'Invalid'}), 400
-    if len(new_pin) < 4 or not new_pin.isdigit():
-        return jsonify({'success': False, 'message': 'PIN must be 4+ digits'}), 400
-    conn = get_db()
-    try:
-        cur = db_execute(conn,
-            "UPDATE users SET pin_hash = ?, locked_until = NULL, failed_attempts = 0, active = 1 WHERE username = ?",
-            (hash_pin(new_pin), 'admin'))
-        conn.commit()
-        if USE_POSTGRES and hasattr(cur, 'rowcount'):
-            n = cur.rowcount
-        else:
-            n = conn.total_changes if hasattr(conn, 'total_changes') else 1
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        return jsonify({'success': False, 'message': str(e)}), 500
-    finally:
-        conn.close()
-    return jsonify({'success': True, 'message': f'Admin re-enabled. Log in with username **admin** and PIN **{new_pin}**. Remove RESET_ADMIN_SECRET from env after use.'})
-
-
 @app.route('/api/auth/login', methods=['POST'])
 def login():
+    """Sign in with 2FA only: username + 6-digit TOTP code. No PIN."""
     if not check_ip_rate_limit(request.remote_addr):
         return jsonify({'success': False, 'message': 'Too many attempts. Wait 1 minute.'}), 429
 
-    data = request.json
-    username = data.get('username', '').strip().lower()
-    pin = data.get('pin', '').strip()
+    data = request.json or {}
+    username = (data.get('username') or '').strip().lower()
+    totp_code = (data.get('totp_code') or '').strip()
 
-    if not username or not pin:
-        return jsonify({'success': False, 'message': 'Username and PIN required'}), 400
+    if not username or not totp_code:
+        return jsonify({'success': False, 'message': 'Username and 2FA code required'}), 400
+    if len(totp_code) != 6 or not totp_code.isdigit():
+        return jsonify({'success': False, 'message': 'Enter the 6-digit code from your authenticator app'}), 400
 
     conn = get_db()
     try:
         cleanup_expired(conn)
         user = db_fetchone(conn, 'SELECT * FROM users WHERE username = ?', (username,))
-
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
-        if user.get('locked_until'):
-            try:
-                locked = datetime.fromisoformat(str(user['locked_until']))
-                if locked.tzinfo is None:
-                    locked = locked.replace(tzinfo=timezone.utc)
-                if now_utc() < locked:
-                    mins_left = int((locked - now_utc()).total_seconds() / 60) + 1
-                    return jsonify({'success': False, 'message': f'Account locked. Try again in {mins_left} min'}), 423
-            except Exception:
-                pass
+        secret = (user.get('totp_secret') or '').strip()
+        enabled = user.get('totp_enabled')
+        if not secret or enabled in (None, 0, False, '0'):
+            return jsonify({'success': False, 'message': '2FA not set up. Contact your administrator.'}), 403
 
-        if not user['active']:
-            return jsonify({'success': False, 'message': 'Account disabled'}), 403
-
-        if not verify_pin(pin, user['pin_hash']):
-            attempts = (user.get('failed_attempts') or 0) + 1
-            if attempts >= MAX_LOGIN_ATTEMPTS:
-                db_execute(conn,
-                    "UPDATE users SET failed_attempts = ?, locked_until = datetime('now', '+' || ? || ' minutes') WHERE id = ?",
-                    (attempts, str(LOCKOUT_MINUTES), user['id']))
-                conn.commit()
-                audit(user['id'], 'account_locked', f'From {request.remote_addr}')
-                return jsonify({'success': False, 'message': f'Account locked for {LOCKOUT_MINUTES} min'}), 423
-            db_execute(conn, 'UPDATE users SET failed_attempts = ? WHERE id = ?', (attempts, user['id']))
-            conn.commit()
-            return jsonify({'success': False, 'message': f'Invalid PIN. {MAX_LOGIN_ATTEMPTS - attempts} left'}), 401
-
-        db_execute(conn, 'UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?', (user['id'],))
-        conn.commit()
-
-        if user.get('totp_enabled') and user.get('totp_secret'):
-            pending = secrets.token_urlsafe(48)
-            db_execute(conn, 'DELETE FROM pending_2fa WHERE user_id = ?', (user['id'],))
-            db_execute(conn, "INSERT INTO pending_2fa (user_id, pending_token, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
-                       (user['id'], pending))
-            conn.commit()
-            return jsonify({'success': True, 'totp_required': True, 'pending_token': pending})
+        try:
+            totp = pyotp.TOTP(secret)
+            # valid_window=2 allows ±60 sec for clock skew between device and server
+            if not totp.verify(totp_code, valid_window=2):
+                audit(user['id'], '2fa_failed', request.remote_addr)
+                return jsonify({'success': False, 'message': 'Invalid 2FA code. Try the newest code from your app.'}), 401
+        except Exception as e:
+            return jsonify({'success': False, 'message': '2FA verification error. Contact support.'}), 500
 
         token = secrets.token_urlsafe(48)
         device = request.headers.get('User-Agent', '')[:200]
@@ -616,8 +558,8 @@ def login():
                 'id': user['id'], 'username': user['username'],
                 'display_name': user['display_name'], 'role': user['role'],
                 'email': user.get('email') or '', 'designation': user.get('designation') or '',
-                'must_change_pin': bool(user.get('must_change_pin')),
-                'totp_enabled': bool(user.get('totp_enabled')),
+                'must_change_pin': False,
+                'totp_enabled': True,
                 'allowed_projects': allowed
             }
         })
@@ -790,12 +732,18 @@ def confirm_2fa():
 @app.route('/api/auth/2fa/disable', methods=['POST'])
 @require_auth
 def disable_2fa():
-    pin = request.json.get('pin', '').strip()
+    """Disable 2FA; requires current 2FA code (sign-in is 2FA only)."""
+    data = request.json or {}
+    totp_code = (data.get('totp_code') or data.get('pin') or '').strip()
     conn = get_db()
     try:
         user = db_fetchone(conn, 'SELECT * FROM users WHERE id = ?', (request.user['id'],))
-        if not verify_pin(pin, user['pin_hash']):
-            return jsonify({'success': False, 'message': 'Incorrect PIN'}), 401
+        if not user.get('totp_secret'):
+            return jsonify({'success': False, 'message': '2FA is not enabled'}), 400
+        if not totp_code or len(totp_code) != 6:
+            return jsonify({'success': False, 'message': 'Enter your current 6-digit 2FA code to disable'}), 400
+        if not pyotp.TOTP(user['totp_secret']).verify(totp_code, valid_window=1):
+            return jsonify({'success': False, 'message': 'Incorrect 2FA code'}), 401
         db_execute(conn, 'UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?', (request.user['id'],))
         conn.commit()
     finally:
@@ -836,13 +784,11 @@ def api_add_user():
     username = data.get('username', '').strip().lower()
     display_name = data.get('display_name', '').strip()
     role = data.get('role', 'supervisor')
-    pin = data.get('pin', '').strip()
+    pin = data.get('pin', '1234').strip() or '1234'
     project_ids = data.get('project_ids', [])
 
     if not username or not display_name:
         return jsonify({'success': False, 'message': 'Username and name required'}), 400
-    if not pin or len(pin) < 4 or not pin.isdigit():
-        return jsonify({'success': False, 'message': 'PIN must be 4+ digits'}), 400
     if role not in ROLE_HIERARCHY:
         return jsonify({'success': False, 'message': f'Invalid role. Use: {", ".join(ROLE_HIERARCHY.keys())}'}), 400
     if request.user['role'] != 'executive' and role in ('executive', 'admin'):
@@ -858,12 +804,13 @@ def api_add_user():
     if role in ('scanner', 'focal_point') and not project_ids:
         return jsonify({'success': False, 'message': 'Assign at least one area for scanner/focal point'}), 400
 
+    totp_secret = pyotp.random_base32()
     conn = get_db()
     try:
         db_execute(conn, '''
-            INSERT INTO users (username, display_name, email, designation, pin_hash, role, must_change_pin)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
-        ''', (username, display_name, email or None, designation or None, hash_pin(pin), role))
+            INSERT INTO users (username, display_name, email, designation, pin_hash, role, must_change_pin, totp_secret, totp_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1)
+        ''', (username, display_name, email or None, designation or None, hash_pin(pin), role, totp_secret))
         conn.commit()
 
         user = db_fetchone(conn, 'SELECT id FROM users WHERE username = ?', (username,))
@@ -877,7 +824,12 @@ def api_add_user():
             conn.commit()
 
         audit(request.user['id'], 'user_created', f'{username} ({role})')
-        return jsonify({'success': True, 'message': f'User {username} created'})
+        uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name='PTC POB Tracker')
+        return jsonify({
+            'success': True,
+            'message': f'User {username} created. Give them the 2FA setup below to sign in.',
+            'totp_setup': {'secret': totp_secret, 'uri': uri}
+        })
     except Exception as e:
         if 'UNIQUE' in str(e).upper() or 'unique' in str(e).lower():
             return jsonify({'success': False, 'message': 'Username already exists'}), 400
@@ -892,8 +844,6 @@ def api_update_user(user_id):
     data = request.json
     conn = get_db()
     try:
-        if 'active' in data:
-            db_execute(conn, 'UPDATE users SET active = ? WHERE id = ?', (1 if data['active'] else 0, user_id))
         if 'role' in data and data['role'] in ROLE_HIERARCHY:
             db_execute(conn, 'UPDATE users SET role = ? WHERE id = ?', (data['role'], user_id))
         if 'display_name' in data:
@@ -934,58 +884,32 @@ def api_reset_pin(user_id):
 @app.route('/api/users/<int:user_id>/reset-2fa', methods=['POST'])
 @require_role('executive', 'admin')
 def admin_reset_2fa(user_id):
+    """Generate new 2FA secret for user; return secret/uri so admin can give it to the user (sign-in is 2FA only)."""
     conn = get_db()
     try:
-        db_execute(conn, 'UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?', (user_id,))
+        row = db_fetchone(conn, 'SELECT username FROM users WHERE id = ?', (user_id,))
+        if not row:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+        new_secret = pyotp.random_base32()
+        db_execute(conn, 'UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE id = ?', (new_secret, user_id))
         conn.commit()
+        uri = pyotp.TOTP(new_secret).provisioning_uri(name=row['username'], issuer_name='PTC POB Tracker')
+        audit(request.user['id'], '2fa_reset', f'#{user_id}')
+        return jsonify({
+            'success': True,
+            'message': 'New 2FA secret generated. Give the user this setup to sign in.',
+            'totp_setup': {'secret': new_secret, 'uri': uri}
+        })
     finally:
         conn.close()
-    audit(request.user['id'], '2fa_reset', f'#{user_id}')
-    return jsonify({'success': True, 'message': '2FA reset'})
 
 
 # ============================================================
 # PROJECTS / SITES (filtered by user access)
 # ============================================================
 
-@app.route('/reset-admin.html')
-def serve_reset_page():
-    """Serve page that redirects to root URL reset."""
-    return (
-        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-        '<meta http-equiv="refresh" content="0;url=/?reset_admin=1&secret=pobreset2026&pin=1111">'
-        '</head><body><p>Re-enabling... <a href="/?reset_admin=1&secret=pobreset2026&pin=1111">Click here</a>.</p></body></html>',
-        200,
-        {'Content-Type': 'text/html; charset=utf-8'}
-    )
-
-
 @app.route('/')
 def index():
-    # Fallback: re-enable admin from root URL (e.g. if /reset-admin 404s)
-    if request.args.get('reset_admin') and request.args.get('secret') and request.args.get('pin'):
-        secret = request.args.get('secret', '').strip()
-        pin = request.args.get('pin', '').strip()
-        if secret == RESET_SECRET and len(pin) >= 4 and pin.isdigit():
-            conn = get_db()
-            try:
-                db_execute(conn, "UPDATE users SET active = 1, locked_until = NULL, failed_attempts = 0")
-                conn.commit()
-                first = db_fetchone(conn, "SELECT id, username FROM users ORDER BY id LIMIT 1")
-                if first:
-                    uid = first['id'] if isinstance(first, dict) else first[0]
-                    uname = (first.get('username') or first[1]) if isinstance(first, dict) else first[1]
-                    db_execute(conn, "UPDATE users SET pin_hash = ?, active = 1 WHERE id = ?", (hash_pin(pin), uid))
-                    conn.commit()
-                    uname_str = str(uname) if uname else 'admin'
-                    return f'<html><body style="font-family:sans-serif;padding:2rem"><h2>Done</h2><p>Log in with <b>{uname_str}</b> / <b>{pin}</b>. <a href="/">Login</a></p></body></html>'
-            except Exception as e:
-                try: conn.rollback()
-                except Exception: pass
-                return f'<html><body><h2>Error</h2><pre>{e}</pre></body></html>', 500
-            finally:
-                conn.close()
-            return f'<html><body><h2>Done</h2><p><a href="/">Login</a> with admin / {pin}</p></body></html>'
     return send_from_directory('public', 'index.html')
 
 
@@ -1770,8 +1694,39 @@ if __name__ == '__main__':
     cert_file = os.path.join(cert_dir, 'cert.pem')
     key_file = os.path.join(cert_dir, 'key.pem')
     use_ssl = os.path.exists(cert_file) and os.path.exists(key_file)
-    proto = 'https' if use_ssl else 'http'
 
+    if not use_ssl:
+        try:
+            os.makedirs(cert_dir, exist_ok=True)
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            from cryptography.hazmat.backends import default_backend
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'localhost')])
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(name)
+                .issuer_name(name)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.now(timezone.utc))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .add_extension(x509.SubjectAlternativeName([x509.DNSName('localhost'), x509.DNSName('127.0.0.1')]), critical=False)
+                .sign(key, hashes.SHA256(), default_backend())
+            )
+            with open(key_file, 'wb') as f:
+                f.write(key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption()))
+            with open(cert_file, 'wb') as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            use_ssl = True
+            print("  Generated self-signed HTTPS cert in ./certs/")
+        except Exception as e:
+            print(f"  HTTPS cert generation skipped: {e}")
+            print("  Run with http:// (or add cert.pem + key.pem to ./certs/ for HTTPS)")
+
+    proto = 'https' if use_ssl else 'http'
     print(f"\n{'='*44}")
     print(f"  PTC POB Tracker - Cloud Ready")
     print(f"{'='*44}")

@@ -413,6 +413,9 @@ tr:last-child td { border-bottom: none; }
 .qr-card .qr-name { font-weight: 600; font-size: 0.8rem; line-height: 1.2; margin-bottom: 2px; word-break: break-word; }
 .qr-card .qr-id { font-size: 0.7rem; color: #64748b; }
 .qr-card .qr-role { font-size: 0.65rem; color: #94a3b8; }
+.qr-card .qr-project { font-size: 0.65rem; color: #475569; margin-top: 4px; }
+.qr-card .qr-handout { font-size: 0.6rem; color: #94a3b8; margin-top: 4px; }
+.qr-print-hint { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 12px; }
 
 /* Settings */
 .settings-section {
@@ -464,22 +467,26 @@ tr:last-child td { border-bottom: none; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toastOut { to { opacity: 0; transform: translateY(-20px); } }
 
-/* Print styles for QR codes */
+/* Print styles for QR codes — one card per person, cut and hand out */
 @media print {
     body { background: white; color: black; }
-    .topbar, .tab-nav, .qr-controls, .overlay, .toast-container { display: none !important; }
+    .topbar, .tab-nav, .qr-controls, .overlay, .toast-container, .qr-print-hint { display: none !important; }
     .tab-content { display: none !important; }
     #tab-qrcodes { display: block !important; padding: 0; }
     .qr-grid {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 8px;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        padding: 0;
     }
     .qr-card {
-        border: 1px solid #ddd;
-        padding: 8px;
+        border: 1px solid #333;
+        padding: 12px;
         break-inside: avoid;
+        page-break-inside: avoid;
     }
-    .qr-card img { width: 80px; height: 80px; }
+    .qr-card img { width: 90px; height: 90px; }
+    .qr-card .qr-name { font-size: 0.85rem; }
+    .qr-card .qr-handout { color: #333; font-size: 0.65rem; }
 }
 
 /* Responsive */
