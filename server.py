@@ -1512,6 +1512,24 @@ def api_qrcodes_batch():
     return jsonify(results)
 
 
+@app.route('/api/qrcodes/single')
+@require_auth
+def api_qrcode_single():
+    """Download a single QR code PNG for one employee."""
+    employee_no = request.args.get('employee_no', '').strip()
+    project_id = request.args.get('project_id', '').strip()
+    if not employee_no or not project_id:
+        return jsonify({'error': 'employee_no and project_id required'}), 400
+    qr_payload = f"{project_id}|{employee_no}"
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    buf = BytesIO()
+    qr.make_image(fill_color="black", back_color="white").save(buf, format='PNG')
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png', as_attachment=True, download_name=f'QR_{employee_no}.png')
+
+
 @app.route('/api/export/download-token', methods=['POST'])
 @require_auth
 def api_download_token():

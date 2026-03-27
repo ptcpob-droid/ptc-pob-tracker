@@ -120,7 +120,9 @@ function showApp() {
         if (qrTab) qrTab.style.display = '';
         if (admin) {
             $('#main-content').style.display = 'block';
-            if (dashTab) dashTab.click();
+            if (dashTab) {
+                dashTab.click();
+            }
         } else {
             $('#setup-overlay').classList.remove('hidden');
         }
@@ -210,8 +212,6 @@ function initLogin() {
                 toast(`Welcome, ${data.user.display_name}`, 'success');
             } else {
                 errorDiv.textContent = data.message;
-                totpInput.value = '';
-                totpInput.focus();
             }
         } catch (e) {
             errorDiv.textContent = 'Connection error. Is the server running?';
@@ -221,8 +221,10 @@ function initLogin() {
     }
 
     loginBtn.addEventListener('click', doLogin);
-    totpInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') doLogin(); });
-    usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') totpInput.focus(); });
+    $('#login-pin')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') doLogin(); });
+    $('#login-totp')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') doLogin(); });
+    $('#login-username')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#login-pin')?.focus(); });
+    $('#login-admin-username')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#login-totp')?.focus(); });
 
     $('#user-badge').addEventListener('click', () => {
         if (confirm('Logout?')) doLogout();
@@ -830,6 +832,76 @@ function playSound(type) {
 // ============================================================
 // DASHBOARD
 // ============================================================
+let _dashWorkers = [];
+
+async function initDashFilters() {
+    const dd = $('#dash-division'), da = $('#dash-area'), dp = $('#dash-project'), ds = $('#dash-site');
+    const divs = await api('/divisions');
+    if (Array.isArray(divs)) {
+        dd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    }
+    dd.addEventListener('change', async () => {
+        da.innerHTML = '<option value="">All Areas</option>';
+        dp.innerHTML = '<option value="">All Projects</option>';
+        ds.innerHTML = '<option value="">All Sites</option>';
+        if (dd.value) {
+            const areas = await api(`/areas?division_id=${dd.value}`);
+            if (Array.isArray(areas)) da.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        }
+        refreshDashboard();
+    });
+    da.addEventListener('change', async () => {
+        dp.innerHTML = '<option value="">All Projects</option>';
+        ds.innerHTML = '<option value="">All Sites</option>';
+        if (da.value) await loadProjects(dp, true, da.value, null);
+        refreshDashboard();
+    });
+    dp.addEventListener('change', async () => {
+        ds.innerHTML = '<option value="">All Sites</option>';
+        if (dp.value) await loadSitesForProject(ds, dp.value);
+        refreshDashboard();
+    });
+    ds.addEventListener('change', refreshDashboard);
+
+    const did = $('#dash-import-division'), dia = $('#dash-import-area');
+    const idivs = await api('/divisions');
+    if (Array.isArray(idivs)) did.innerHTML = '<option value="">-- Select --</option>' + idivs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    did.addEventListener('change', async () => {
+        dia.disabled = true; dia.innerHTML = '<option value="">Loading...</option>';
+        if (!did.value) { dia.innerHTML = '<option value="">Select division</option>'; return; }
+        const areas = await api(`/areas?division_id=${did.value}`);
+        dia.innerHTML = '<option value="">-- Select --</option>' + (Array.isArray(areas) ? areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') : '');
+        dia.disabled = false;
+    });
+    $('#dash-import-btn').addEventListener('click', async () => {
+        const file = $('#dash-import-file')?.files?.[0];
+        if (!file) return toast('Select an Excel file', 'error');
+        const areaId = dia.value;
+        if (!areaId) return toast('Select a division and area', 'error');
+        const status = $('#dash-import-status');
+        status.textContent = 'Importing...';
+        const form = new FormData();
+        form.append('file', file); form.append('area_id', areaId);
+        try {
+            const res = await fetch('/api/import-excel', { method: 'POST', body: form, headers: { 'Authorization': `Bearer ${state.token}` } });
+            const result = await res.json();
+            status.textContent = result.message || 'Done';
+            if (result.success) {
+                toast(result.message, 'success');
+                $('#dash-import-file').value = '';
+                refreshDashboard();
+            }
+        } catch { status.textContent = 'Upload failed'; }
+    });
+}
+
+function refreshDashboard() {
+    loadDashboard();
+    loadWorkerList();
+    loadDashQRCodes();
+    loadPersonnel('present');
+}
+
 async function loadDashboard() {
     const d = $('#dash-date'), p = $('#dash-project'), s = $('#dash-site');
     if (!d.value) d.value = new Date().toISOString().split('T')[0];
@@ -874,6 +946,73 @@ async function loadDashboard() {
     }
 }
 
+async function loadWorkerList() {
+    const wrap = $('#worker-list');
+    if (!wrap) return;
+    wrap.innerHTML = '<div class="spinner"></div>';
+    const p = $('#dash-project').value;
+    let url = '/employees';
+    if (p) url += `?project_id=${p}`;
+    const data = await api(url);
+    if (!Array.isArray(data)) { wrap.innerHTML = '<div class="empty-state">No workers</div>'; _dashWorkers = []; return; }
+    _dashWorkers = data;
+    renderWorkerTable(data);
+}
+
+function renderWorkerTable(data) {
+    const wrap = $('#worker-list');
+    const label = $('#worker-count-label');
+    if (label) label.textContent = `${data.length} worker${data.length !== 1 ? 's' : ''}`;
+    if (!data.length) { wrap.innerHTML = '<div class="empty-state">No workers found</div>'; return; }
+    wrap.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>#</th><th>Name</th><th>Employee No.</th><th>Designation</th><th>Discipline</th>
+        <th>Nationality</th><th>Project</th><th>QR</th></tr></thead><tbody>` +
+        data.slice(0, 500).map((w, i) => `<tr>
+        <td>${i + 1}</td><td>${esc(w.name)}</td><td>${esc(w.employee_no)}</td>
+        <td>${esc(w.designation || '')}</td><td>${esc(w.discipline || '')}</td>
+        <td>${esc(w.nationality || '')}</td><td>${esc(w.project_name || '')}</td>
+        <td><button class="btn-qr-dl" data-empno="${esc(w.employee_no)}" data-pid="${w.project_id}" data-name="${esc(w.name)}">Download QR</button></td>
+        </tr>`).join('') + '</tbody></table>';
+
+    wrap.onclick = async (e) => {
+        const btn = e.target.closest('.btn-qr-dl');
+        if (!btn) return;
+        const empNo = btn.dataset.empno, pid = btn.dataset.pid, name = btn.dataset.name;
+        try {
+            const res = await fetch(`/api/qrcodes/single?employee_no=${encodeURIComponent(empNo)}&project_id=${pid}`, {
+                headers: { 'Authorization': `Bearer ${state.token}` }
+            });
+            const blob = await res.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `QR_${name.replace(/\s+/g, '_')}_${empNo}.png`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        } catch { toast('Download failed', 'error'); }
+    };
+}
+
+async function loadDashQRCodes() {
+    const grid = $('#qr-grid');
+    if (!grid) return;
+    grid.innerHTML = '<div class="spinner"></div>';
+    const p = $('#dash-project').value, search = ($('#qr-search')?.value || '').toLowerCase();
+    let url = '/qrcodes/batch';
+    if (p) url += `?project_id=${p}`;
+    const data = await api(url);
+    if (!Array.isArray(data)) { grid.innerHTML = '<div class="empty-state">No QR codes</div>'; return; }
+    let filtered = search ? data.filter(e => e.name.toLowerCase().includes(search) || e.employee_no.toLowerCase().includes(search)) : data;
+    if (!filtered.length) { grid.innerHTML = '<div class="empty-state">No matching workers</div>'; return; }
+    grid.innerHTML = filtered.map(e => `<div class="qr-card" data-emp="${esc(e.employee_no)}">
+        <img src="data:image/png;base64,${e.qr_base64}" alt="QR ${esc(e.employee_no)}">
+        <div class="qr-name">${esc(e.name)}</div>
+        <div class="qr-id">${esc(e.employee_no)}</div>
+        <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
+        ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
+        <div class="qr-handout">POB Tracker — present at site</div>
+        </div>`).join('');
+}
+
 function formatHeadcountDate(iso) {
     if (!iso) return '';
     const [y, m, day] = iso.split('-');
@@ -909,11 +1048,12 @@ async function loadPersonnel(view = 'present') {
 }
 
 // ============================================================
-// QR CODES
+// QR CODES (separate tab for print view)
 // ============================================================
-async function loadQRCodes() {
-    const grid = $('#qr-grid');
-    const pf = $('#qr-project-filter').value, search = $('#qr-search').value;
+async function loadQRCodesTab() {
+    const grid = $('#qr-grid-tab');
+    if (!grid) return;
+    const pf = $('#qr-project-filter').value, search = ($('#qr-search-tab')?.value || '').toLowerCase();
     grid.innerHTML = '<div class="spinner"></div>';
 
     let url = '/qrcodes/batch';
@@ -921,12 +1061,8 @@ async function loadQRCodes() {
     const data = await api(url);
     if (!Array.isArray(data)) { grid.innerHTML = '<div class="empty-state">Error loading</div>'; return; }
 
-    let filtered = data;
-    if (search) {
-        const s = search.toLowerCase();
-        filtered = data.filter(e => e.name.toLowerCase().includes(s) || e.employee_no.toLowerCase().includes(s));
-    }
-    if (filtered.length === 0) { grid.innerHTML = '<div class="empty-state">No employees found</div>'; return; }
+    let filtered = search ? data.filter(e => e.name.toLowerCase().includes(search) || e.employee_no.toLowerCase().includes(search)) : data;
+    if (!filtered.length) { grid.innerHTML = '<div class="empty-state">No employees found</div>'; return; }
 
     grid.innerHTML = filtered.map(e => `<div class="qr-card" data-emp="${esc(e.employee_no)}">
         <img src="data:image/png;base64,${e.qr_base64}" alt="QR ${esc(e.employee_no)}">
@@ -1204,6 +1340,7 @@ function initAdmin() {
 // ============================================================
 // TABS
 // ============================================================
+let _dashInited = false;
 function initTabs() {
     let adminInit = false;
     $$('.tab').forEach(tab => {
@@ -1214,22 +1351,17 @@ function initTabs() {
             const target = tab.dataset.tab;
             $(`#tab-${target}`).classList.add('active');
 
-            if (target === 'dashboard') { loadProjects($('#dash-project'), true); loadDashboard(); loadPersonnel('present'); }
-            else if (target === 'qrcodes') { loadProjects($('#qr-project-filter'), true); loadQRCodes(); }
+            if (target === 'dashboard') {
+                if (!_dashInited) { initDashFilters(); _dashInited = true; }
+                refreshDashboard();
+            }
+            else if (target === 'qrcodes') { loadProjects($('#qr-project-filter'), true); loadQRCodesTab(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });
     });
 
-    const rd = () => { loadDashboard(); loadPersonnel('present'); };
-    $('#dash-date').addEventListener('change', rd);
-    $('#dash-project').addEventListener('change', () => {
-        const pid = $('#dash-project').value;
-        if (pid) loadSitesForProject($('#dash-site'), pid);
-        else $('#dash-site').innerHTML = '<option value="">All Sites</option>';
-        rd();
-    });
-    $('#dash-site').addEventListener('change', rd);
+    $('#dash-date').addEventListener('change', refreshDashboard);
     $('#dash-session')?.addEventListener('change', () => {
         const view = document.querySelector('.btn-toggle.active')?.dataset?.view || 'present';
         loadPersonnel(view);
@@ -1244,9 +1376,23 @@ function initTabs() {
     });
 
     let qrT;
-    $('#qr-search').addEventListener('input', () => { clearTimeout(qrT); qrT = setTimeout(loadQRCodes, 300); });
-    $('#qr-project-filter').addEventListener('change', loadQRCodes);
-    $('#btn-print-qr').addEventListener('click', () => window.print());
+    $('#qr-search')?.addEventListener('input', () => { clearTimeout(qrT); qrT = setTimeout(loadDashQRCodes, 300); });
+    $('#btn-print-qr')?.addEventListener('click', () => window.print());
+
+    let qrT2;
+    $('#qr-search-tab')?.addEventListener('input', () => { clearTimeout(qrT2); qrT2 = setTimeout(loadQRCodesTab, 300); });
+    $('#qr-project-filter')?.addEventListener('change', loadQRCodesTab);
+    $('#btn-print-qr-tab')?.addEventListener('click', () => window.print());
+
+    let workerT;
+    $('#worker-search')?.addEventListener('input', () => {
+        clearTimeout(workerT);
+        workerT = setTimeout(() => {
+            const s = ($('#worker-search').value || '').toLowerCase();
+            const filtered = s ? _dashWorkers.filter(w => w.name.toLowerCase().includes(s) || w.employee_no.toLowerCase().includes(s)) : _dashWorkers;
+            renderWorkerTable(filtered);
+        }, 300);
+    });
 
     $('#btn-export').addEventListener('click', async () => {
         const d = $('#dash-date').value || new Date().toISOString().split('T')[0];
@@ -1299,8 +1445,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('#dash-date').value = new Date().toISOString().split('T')[0];
 
     if (state.token && state.user) {
-        if (state.user.must_change_pin) showChangePinScreen();
-        else showApp();
+        showApp();
     } else {
         showLogin();
     }

@@ -235,12 +235,44 @@
 
         <!-- Dashboard Tab -->
         <div id="tab-dashboard" class="tab-content">
-            <div class="dashboard-controls">
-                <input type="date" id="dash-date" class="input">
+            <!-- Division / Area / Project filter bar -->
+            <div class="dash-filter-bar">
+                <select id="dash-division" class="input"><option value="">All Divisions</option></select>
+                <select id="dash-area" class="input"><option value="">All Areas</option></select>
                 <select id="dash-project" class="input"><option value="">All Projects</option></select>
                 <select id="dash-site" class="input"><option value="">All Sites</option></select>
+                <input type="date" id="dash-date" class="input" style="max-width:160px">
             </div>
+
+            <!-- Excel Upload Section -->
+            <div class="section dash-upload-section">
+                <div class="section-header">
+                    <h3>Import Manpower Data</h3>
+                </div>
+                <div class="dash-upload-row">
+                    <div class="form-group" style="flex:1;min-width:140px">
+                        <label>Division</label>
+                        <select id="dash-import-division" class="input"><option value="">-- Select --</option></select>
+                    </div>
+                    <div class="form-group" style="flex:1;min-width:140px">
+                        <label>Area</label>
+                        <select id="dash-import-area" class="input" disabled><option value="">Select division</option></select>
+                    </div>
+                    <div class="form-group" style="flex:1.5;min-width:180px">
+                        <label>Excel (.xlsx)</label>
+                        <input type="file" id="dash-import-file" class="input" accept=".xlsx" style="padding:6px">
+                    </div>
+                    <div class="form-group" style="align-self:flex-end">
+                        <button id="dash-import-btn" class="btn btn-primary">Upload &amp; Import</button>
+                    </div>
+                </div>
+                <div id="dash-import-status" style="font-size:0.85rem;color:var(--text-dim);margin-top:4px"></div>
+            </div>
+
+            <!-- Stats Cards -->
             <div id="stats-cards" class="stats-grid"></div>
+
+            <!-- Headcount Table -->
             <div class="section">
                 <div class="section-header">
                     <h3>Headcount by Project / Site</h3>
@@ -250,9 +282,32 @@
                 </div>
                 <div id="headcount-table-wrap" class="table-wrap"></div>
             </div>
+
+            <!-- Worker List -->
+            <div class="section">
+                <div class="section-header" style="flex-wrap:wrap;gap:8px">
+                    <h3>Workers</h3>
+                    <input type="text" id="worker-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
+                    <span id="worker-count-label" class="text-dim" style="font-size:0.85rem"></span>
+                </div>
+                <div id="worker-list" class="table-wrap" style="max-height:500px;overflow-y:auto"></div>
+            </div>
+
+            <!-- QR Codes Section -->
+            <div class="section">
+                <div class="section-header" style="flex-wrap:wrap;gap:8px">
+                    <h3>QR Codes</h3>
+                    <input type="text" id="qr-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
+                    <button id="btn-print-qr" class="btn btn-sm btn-primary">Print All QR Cards</button>
+                </div>
+                <p class="qr-print-hint">Each worker has a unique QR. Print cards or download individually.</p>
+                <div id="qr-grid" class="qr-grid"></div>
+            </div>
+
+            <!-- Personnel Attendance -->
             <div class="section">
                 <div class="section-header">
-                    <h3>Personnel</h3>
+                    <h3>Personnel Attendance</h3>
                     <span id="personnel-date-label" class="text-dim" style="font-size:0.85rem;font-weight:normal"></span>
                     <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session for Present/Missing">
                         <option value="AM">9 AM</option>
@@ -268,15 +323,15 @@
             </div>
         </div>
 
-        <!-- QR Codes Tab -->
+        <!-- QR Codes Tab (kept for scanner-only print view) -->
         <div id="tab-qrcodes" class="tab-content">
             <div class="qr-controls">
                 <select id="qr-project-filter" class="input"><option value="">All Projects</option></select>
-                <input type="text" id="qr-search" class="input" placeholder="Search by name or ID...">
-                <button id="btn-print-qr" class="btn btn-primary">Print QR Cards</button>
+                <input type="text" id="qr-search-tab" class="input" placeholder="Search by name or ID...">
+                <button id="btn-print-qr-tab" class="btn btn-primary">Print QR Cards</button>
             </div>
-            <p class="qr-print-hint">Each person has a unique QR code. After importing, select a project (or All), then <strong>Print QR Cards</strong> to print and hand to individuals at site.</p>
-            <div id="qr-grid" class="qr-grid"></div>
+            <p class="qr-print-hint">Each person has a unique QR code. Select a project, then <strong>Print QR Cards</strong>.</p>
+            <div id="qr-grid-tab" class="qr-grid"></div>
         </div>
 
         <!-- Admin Tab (admin only) -->
