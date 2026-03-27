@@ -31,16 +31,26 @@ async function api(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json', ...opts.headers };
     if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
 
-    const res = await fetch(`/api${path}`, { ...opts, headers });
-
-    if (res.status === 401) {
-        const body = await res.json();
-        if (body.auth_required) {
-            doLogout(true);
-            return body;
-        }
+    let res;
+    try {
+        res = await fetch(`/api${path}`, { ...opts, headers });
+    } catch (e) {
+        return { success: false, message: 'Network error contacting server' };
     }
-    return res.json();
+
+    let body;
+    try {
+        body = await res.json();
+    } catch (e) {
+        const text = await res.text().catch(() => '');
+        return { success: false, message: `Server returned non-JSON (${res.status})`, detail: text.slice(0, 2000) };
+    }
+
+    if (res.status === 401 && body && body.auth_required) {
+        doLogout(true);
+        return body;
+    }
+    return body;
 }
 
 function toast(msg, type = 'info') {
@@ -75,12 +85,10 @@ function updateClock() {
 // ============================================================
 function hideAllScreens() {
     $('#login-screen').style.display = 'none';
-    $('#change-pin-screen').style.display = 'none';
-    $('#totp-screen').style.display = 'none';
     $('header.topbar').style.display = 'none';
     $('#main-content').style.display = 'none';
     $('#setup-overlay').classList.add('hidden');
-    $('#totp-setup-modal').classList.add('hidden');
+    try { $('#totp-setup-modal').classList.add('hidden'); } catch {}
 }
 
 function showLogin() {
@@ -88,14 +96,35 @@ function showLogin() {
     $('#login-screen').style.display = 'flex';
 }
 
+const isAdminRole = (role) => ['executive', 'admin', 'manager', 'focal_point'].includes(role);
+
 function showApp() {
     hideAllScreens();
     $('header.topbar').style.display = 'flex';
     $('#user-badge').textContent = state.user.display_name;
-    $('#admin-tab').style.display = (state.user.role === 'admin' || state.user.role === 'executive') ? '' : 'none';
+    const role = state.user.role;
+    const admin = isAdminRole(role);
+    $('#admin-tab').style.display = (role === 'admin' || role === 'executive') ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
-    if (scannerTab) scannerTab.style.display = (state.user.role === 'focal_point') ? 'none' : '';
-    $('#setup-overlay').classList.remove('hidden');
+    const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
+    const qrTab = document.querySelector('.tab[data-tab="qrcodes"]');
+
+    if (role === 'scanner') {
+        if (scannerTab) scannerTab.style.display = '';
+        if (dashTab) dashTab.style.display = 'none';
+        if (qrTab) qrTab.style.display = 'none';
+        $('#setup-overlay').classList.remove('hidden');
+    } else {
+        if (scannerTab) scannerTab.style.display = (role === 'focal_point') ? 'none' : '';
+        if (dashTab) dashTab.style.display = '';
+        if (qrTab) qrTab.style.display = '';
+        if (admin) {
+            $('#main-content').style.display = 'block';
+            if (dashTab) dashTab.click();
+        } else {
+            $('#setup-overlay').classList.remove('hidden');
+        }
+    }
 }
 
 function doLogout(expired = false) {
@@ -117,16 +146,47 @@ function doLogout(expired = false) {
 
 function initLogin() {
     const loginBtn = $('#login-btn');
-    const usernameInput = $('#login-username');
-    const totpInput = $('#login-totp');
     const errorDiv = $('#login-error');
+    let loginMode = 'scanner';
+
+    const scannerFields = $('#login-scanner-fields');
+    const adminFields = $('#login-admin-fields');
+    const modeScanner = $('#login-mode-scanner');
+    const modeAdmin = $('#login-mode-admin');
+
+    function setMode(mode) {
+        loginMode = mode;
+        errorDiv.textContent = '';
+        if (mode === 'scanner') {
+            scannerFields.style.display = '';
+            adminFields.style.display = 'none';
+            modeScanner.classList.add('active');
+            modeAdmin.classList.remove('active');
+        } else {
+            scannerFields.style.display = 'none';
+            adminFields.style.display = '';
+            modeScanner.classList.remove('active');
+            modeAdmin.classList.add('active');
+        }
+    }
+    modeScanner.addEventListener('click', () => setMode('scanner'));
+    modeAdmin.addEventListener('click', () => setMode('admin'));
 
     async function doLogin() {
         errorDiv.textContent = '';
-        const username = usernameInput.value.trim();
-        const totp_code = totpInput.value.trim();
-        if (!username || !totp_code) { errorDiv.textContent = 'Enter username and 2FA code'; return; }
-        if (totp_code.length !== 6 || !/^\d+$/.test(totp_code)) { errorDiv.textContent = 'Enter the 6-digit code from your authenticator app'; return; }
+        let body;
+        if (loginMode === 'scanner') {
+            const username = $('#login-username').value.trim();
+            const pin = $('#login-pin').value.trim();
+            if (!username || !pin) { errorDiv.textContent = 'Enter username and PIN'; return; }
+            body = { username, pin, login_mode: 'scanner' };
+        } else {
+            const username = $('#login-admin-username').value.trim();
+            const totp_code = $('#login-totp').value.trim();
+            if (!username || !totp_code) { errorDiv.textContent = 'Enter username and 2FA code'; return; }
+            if (totp_code.length !== 6 || !/^\d+$/.test(totp_code)) { errorDiv.textContent = 'Enter the 6-digit code from your authenticator app'; return; }
+            body = { username, totp_code, login_mode: 'admin' };
+        }
 
         loginBtn.disabled = true;
         loginBtn.textContent = 'Signing in...';
@@ -135,7 +195,7 @@ function initLogin() {
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, totp_code })
+                body: JSON.stringify(body)
             });
             const data = await res.json();
 
@@ -144,7 +204,8 @@ function initLogin() {
                 state.user = data.user;
                 localStorage.setItem('pob_token', data.token);
                 localStorage.setItem('pob_user', JSON.stringify(data.user));
-                totpInput.value = '';
+                $('#login-pin').value = '';
+                $('#login-totp').value = '';
                 showApp();
                 toast(`Welcome, ${data.user.display_name}`, 'success');
             } else {
@@ -301,21 +362,70 @@ async function disable2FA() {
 }
 
 // ============================================================
-// SETUP OVERLAY
+// SETUP OVERLAY (Division -> Area -> Project -> Site)
 // ============================================================
-async function loadProjects(selectEl, includeAll = false) {
-    const projects = await api('/projects');
-    if (!Array.isArray(projects)) return [];
+async function loadDivisions(selectEl) {
+    const list = await api('/divisions');
+    if (!Array.isArray(list)) {
+        selectEl.innerHTML = `<option value="">${esc(list?.message || 'Failed to load divisions')}</option>`;
+        return [];
+    }
+    selectEl.innerHTML = '<option value="">-- Select Division --</option>';
+    list.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.textContent = d.name;
+        selectEl.appendChild(opt);
+    });
+    return list;
+}
+
+async function loadAreas(selectEl, divisionId) {
+    if (!divisionId) {
+        selectEl.innerHTML = '<option value="">Select division first</option>';
+        selectEl.disabled = true;
+        return [];
+    }
+    const list = await api(`/areas?division_id=${divisionId}`);
+    if (!Array.isArray(list)) {
+        selectEl.innerHTML = '<option value="">Failed to load areas</option>';
+        return [];
+    }
+    selectEl.innerHTML = '<option value="">-- Select Area --</option>';
+    list.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = a.name;
+        selectEl.appendChild(opt);
+    });
+    selectEl.disabled = false;
+    return list;
+}
+
+async function loadProjects(selectEl, includeAll = false, areaId = null, divisionId = null) {
+    selectEl.innerHTML = '<option value="">Loading...</option>';
+    let url = '/projects';
+    if (areaId) url += `?area_id=${areaId}`;
+    else if (divisionId) url += `?division_id=${divisionId}`;
+    const projects = await api(url);
+    if (!Array.isArray(projects)) {
+        const msg = projects?.message || projects?.error || 'Failed to load projects';
+        selectEl.innerHTML = `<option value="">${esc(msg)}</option>`;
+        toast(msg, 'error');
+        return [];
+    }
     selectEl.innerHTML = includeAll
         ? '<option value="">All Projects</option>'
         : '<option value="">-- Select Project --</option>';
     projects.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.id;
-        opt.textContent = `${p.name} (${p.employee_count} workers)`;
+        const label = p.division_name ? `${p.division_name} / ${p.area_name || ''} / ${p.name}` : p.name;
+        opt.textContent = `${label} (${p.employee_count ?? 0} workers)`;
         opt.dataset.name = p.name;
         selectEl.appendChild(opt);
     });
+    selectEl.disabled = false;
     return projects;
 }
 
@@ -339,11 +449,62 @@ async function loadSitesForProject(selectEl, projectId) {
 }
 
 function initSetup() {
+    const divisionSelect = $('#setup-division');
+    const areaSelect = $('#setup-area');
     const projectSelect = $('#setup-project');
     const siteSelect = $('#setup-site');
 
-    loadProjects(projectSelect);
-    projectSelect.addEventListener('change', () => loadSitesForProject(siteSelect, projectSelect.value));
+    function updateSetupConfirmState() {
+        const btn = $('#setup-confirm');
+        if (!btn) return;
+        const ok = divisionSelect.value && areaSelect.value && projectSelect.value && siteSelect.value;
+        btn.disabled = !ok;
+    }
+    (async () => {
+        await loadDivisions(divisionSelect);
+        updateSetupConfirmState();
+        if (state.user && state.user.role === 'scanner' && state.user.allowed_projects && state.user.allowed_projects.length === 1) {
+            const projects = await api('/projects');
+            if (Array.isArray(projects) && projects.length === 1) {
+                const p = projects[0];
+                if (p.division_id && p.area_id) {
+                    await loadAreas(areaSelect, p.division_id);
+                    divisionSelect.value = p.division_id;
+                    areaSelect.value = p.area_id;
+                    await loadProjects(projectSelect, false, p.area_id, null);
+                } else {
+                    await loadProjects(projectSelect);
+                }
+                projectSelect.value = p.id;
+                await loadSitesForProject(siteSelect, p.id);
+                if (siteSelect.options.length > 0) siteSelect.selectedIndex = 1;
+                updateSetupConfirmState();
+            }
+        }
+    })();
+    divisionSelect.addEventListener('change', async () => {
+        const divId = divisionSelect.value;
+        await loadAreas(areaSelect, divId);
+        areaSelect.value = '';
+        projectSelect.innerHTML = '<option value="">Select area first</option>';
+        projectSelect.disabled = true;
+        siteSelect.innerHTML = '<option value="">Select project first</option>';
+        siteSelect.disabled = true;
+    });
+    areaSelect.addEventListener('change', async () => {
+        const areaId = areaSelect.value;
+        await loadProjects(projectSelect, false, areaId || null, null);
+        if (!areaId) projectSelect.disabled = true;
+        siteSelect.innerHTML = '<option value="">Select project first</option>';
+        siteSelect.disabled = true;
+    });
+    projectSelect.addEventListener('change', () => {
+        loadSitesForProject(siteSelect, projectSelect.value);
+        updateSetupConfirmState();
+    });
+    divisionSelect.addEventListener('change', () => setTimeout(updateSetupConfirmState, 0));
+    areaSelect.addEventListener('change', () => setTimeout(updateSetupConfirmState, 0));
+    siteSelect.addEventListener('change', updateSetupConfirmState);
 
     const auto = sessionByHour();
     $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === auto));
@@ -358,6 +519,8 @@ function initSetup() {
     });
 
     $('#setup-confirm').addEventListener('click', () => {
+        if (!divisionSelect.value) return toast('Select a division', 'error');
+        if (!areaSelect.value) return toast('Select an area', 'error');
         if (!projectSelect.value) return toast('Select a project', 'error');
         if (!siteSelect.value) return toast('Select a site', 'error');
 
@@ -387,11 +550,25 @@ function initSetup() {
             state.siteId = s.siteId;
             state.siteName = s.siteName;
             state.session = (s.session && ['AM','PM','EV'].includes(s.session)) ? s.session : auto;
-            setTimeout(() => {
-                projectSelect.value = s.projectId;
-                loadSitesForProject(siteSelect, s.projectId).then(() => siteSelect.value = s.siteId);
-                $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === state.session));
-            }, 500);
+            $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === state.session));
+            (async () => {
+                const projects = await api('/projects');
+                if (Array.isArray(projects)) {
+                    const proj = projects.find(p => String(p.id) === String(s.projectId));
+                    if (proj && proj.division_id && proj.area_id) {
+                        await loadAreas(areaSelect, proj.division_id);
+                        divisionSelect.value = proj.division_id;
+                        areaSelect.value = proj.area_id;
+                        await loadProjects(projectSelect, false, proj.area_id, null);
+                    } else {
+                        await loadProjects(projectSelect);
+                    }
+                    projectSelect.value = s.projectId;
+                    await loadSitesForProject(siteSelect, s.projectId);
+                    siteSelect.value = s.siteId;
+                }
+                updateSetupConfirmState();
+            })();
         } catch { /* corrupted data */ }
     }
 }
@@ -436,19 +613,51 @@ function initImportModal() {
         }
     });
 
-    $('#btn-open-import-excel')?.addEventListener('click', () => {
+    $('#btn-open-import-excel')?.addEventListener('click', async () => {
         $('#import-modal').classList.remove('hidden');
+        await loadImportExcelDivisionArea();
         $('#import-excel-file').focus?.();
     });
+
+    const importDivisionSelect = $('#import-excel-division');
+    const importAreaSelect = $('#import-excel-area');
+    if (importDivisionSelect) {
+        importDivisionSelect.addEventListener('change', async () => {
+            const divId = importDivisionSelect.value;
+            importAreaSelect.disabled = true;
+            importAreaSelect.innerHTML = '<option value="">Loading...</option>';
+            if (!divId) {
+                importAreaSelect.innerHTML = '<option value="">Select division first</option>';
+                return;
+            }
+            const areas = await api(`/areas?division_id=${divId}`);
+            importAreaSelect.innerHTML = '<option value="">-- Select Area --</option>' +
+                (Array.isArray(areas) ? areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') : '');
+            importAreaSelect.disabled = false;
+        });
+    }
+
+    async function loadImportExcelDivisionArea() {
+        const divs = await api('/divisions');
+        const list = Array.isArray(divs) ? divs : [];
+        if (importDivisionSelect) {
+            importDivisionSelect.innerHTML = '<option value="">-- Select Division --</option>' +
+                list.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        }
+        importAreaSelect.innerHTML = '<option value="">Select division first</option>';
+        importAreaSelect.disabled = true;
+    }
 
     $('#import-excel-btn')?.addEventListener('click', async () => {
         const file = $('#import-excel-file')?.files?.[0];
         if (!file) return toast('Select an Excel (.xlsx) file', 'error');
+        const areaId = importAreaSelect?.value;
+        if (!areaId) return toast('Select a division and area for the import', 'error');
         const status = $('#import-status');
         status.textContent = 'Importing Excel...';
         const form = new FormData();
         form.append('file', file);
-        form.append('region', 'P&C BAB/NEB');
+        form.append('area_id', areaId);
         try {
             const res = await fetch('/api/import-excel', {
                 method: 'POST', body: form,
@@ -740,14 +949,18 @@ async function loadAdmin() {
     _adminUsers = users;
 
     const ul = $('#users-list');
+    const roleLabels = { executive: 'Executive', admin: 'Admin', manager: 'HSE Manager', focal_point: 'Divisional Focal Point', scanner: 'Contractor Scanner' };
     const roleBadge = (role) => {
         const cls = { executive: 'badge-exec', admin: 'badge-danger', manager: 'badge-pm', project_manager: 'badge-pm', focal_point: 'badge-warning', scanner: 'badge-am', supervisor: 'badge-am', viewer: 'badge-warning' };
-        return `<span class="badge ${cls[role] || 'badge-warning'}">${esc(String(role).replace('_', ' '))}</span>`;
+        const label = roleLabels[role] || String(role).replace('_', ' ');
+        return `<span class="badge ${cls[role] || 'badge-warning'}">${esc(label)}</span>`;
     };
     ul.innerHTML = users.map((u, idx) => {
         const projAccess = (u.role === 'executive' || u.role === 'admin' || u.role === 'manager')
-            ? '<em style="opacity:0.6">All areas</em>'
-            : (u.projects && u.projects.length ? u.projects.map(p => esc(p.name)).join(', ') : '<em style="color:var(--danger)">No areas assigned</em>');
+            ? '<em style="opacity:0.6">All</em>'
+            : (u.role === 'focal_point')
+                ? (u.divisions && u.divisions.length ? u.divisions.map(d => esc(d.name)).join(', ') : '<em style="color:var(--danger)">No division</em>')
+                : (u.projects && u.projects.length ? u.projects.map(p => esc(p.name)).join(', ') : '<em style="color:var(--danger)">No project</em>');
         const contact = [u.email, u.designation].filter(Boolean).map(esc).join(' · ') || '';
         return `<div class="scan-item">
         <div>
@@ -789,17 +1002,17 @@ async function loadAdmin() {
             <button class="btn btn-sm btn-success" onclick="open2FASetup()">Enable 2FA</button></div>`;
     }
 
-    const projects = await api('/projects');
-    if (Array.isArray(projects)) {
-        $('#projects-list').innerHTML = projects.map(p => `<div class="scan-item"><div>
-            <div class="scan-item-name">${esc(p.name)}${p.region ? ' <span style="opacity:0.6;font-size:0.85em">(' + esc(p.region) + ')</span>' : ''}</div>
-            <div class="scan-item-sub">${p.employee_count} employees | ${p.site_count} sites</div>
-        </div></div>`).join('') || '<div class="empty-state">No areas</div>';
-        const areaWrap = $('#new-user-areas');
-        if (areaWrap) {
-            areaWrap.innerHTML = projects.map(p => `<label class="area-check"><input type="checkbox" value="${p.id}"> ${esc(p.name)}</label>`).join('');
-        }
+    const [divisions, projects] = await Promise.all([api('/divisions'), api('/projects')]);
+    window._adminDivisions = Array.isArray(divisions) ? divisions : [];
+    window._adminProjects = Array.isArray(projects) ? projects : [];
+    if (window._adminProjects.length) {
+        $('#projects-list').innerHTML = window._adminProjects.map(p => `<div class="scan-item"><div>
+            <div class="scan-item-name">${esc(p.division_name || '')} / ${esc(p.area_name || '')} / ${esc(p.name)}</div>
+            <div class="scan-item-sub">${p.employee_count ?? 0} employees</div>
+        </div></div>`).join('') || '<div class="empty-state">No projects</div>';
     }
+    const areaWrap = $('#new-user-areas');
+    if (areaWrap && typeof fillNewUserAccess === 'function') fillNewUserAccess();
 
     const audit = await api('/audit');
     if (Array.isArray(audit)) {
@@ -841,27 +1054,35 @@ function showTotpGiveModal(secret, uri) {
 }
 
 async function editUserAccess(userId, name, role) {
-    const projects = await api('/projects');
-    if (!Array.isArray(projects) || projects.length === 0) {
-        toast('No areas yet', 'error');
-        return;
-    }
+    const [divisions, projects] = await Promise.all([api('/divisions'), api('/projects')]);
     const user = _adminUsers.find(u => u.id === userId);
-    const currentIds = new Set((user?.projects || []).map(p => p.id));
+    const currentProjectIds = new Set((user?.projects || []).map(p => p.id));
+    const currentDivisionIds = new Set((user?.divisions || []).map(d => d.id));
     const userEmail = (user && user.email) ? esc(user.email) : '';
     const userDesignation = (user && user.designation) ? esc(user.designation) : '';
+
+    const isFocal = role === 'focal_point';
+    const listHtml = isFocal && Array.isArray(divisions)
+        ? divisions.map(d => `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+            <input type="checkbox" data-type="division" value="${d.id}" ${currentDivisionIds.has(d.id) ? 'checked' : ''}>
+            <span>${esc(d.name)}</span></label>`).join('')
+        : Array.isArray(projects)
+            ? projects.map(p => `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+                <input type="checkbox" data-type="project" value="${p.id}" ${currentProjectIds.has(p.id) ? 'checked' : ''}>
+                <span>${esc(p.name)} <span style="opacity:0.5">(${p.employee_count ?? 0})</span></span></label>`).join('')
+            : '<p>No divisions/projects</p>';
 
     const modal = document.createElement('div');
     modal.className = 'overlay';
     const safeName = esc(name);
     modal.innerHTML = `<div class="overlay-content" style="max-width:420px">
-        <h2>Area access: ${safeName}</h2>
+        <h2>Access: ${safeName}</h2>
         <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.85rem">
-            ${(role === 'executive' || role === 'admin' || role === 'manager') ? 'This role sees all areas.' : 'Select areas this user can access:'}
+            ${(role === 'executive' || role === 'admin' || role === 'manager') ? 'This role sees all.' : (isFocal ? 'Select division(s) for Divisional Focal Point:' : 'Select project(s) for Contractor Scanner:')}
         </p>
         <div class="form-group">
             <label>Email</label>
-            <input type="email" id="edit-email" class="input" value="${userEmail}" placeholder="Scanner/Focal Point email">
+            <input type="email" id="edit-email" class="input" value="${userEmail}" placeholder="Email">
         </div>
         <div class="form-group">
             <label>Designation</label>
@@ -870,22 +1091,14 @@ async function editUserAccess(userId, name, role) {
         <div class="form-group">
             <label>Role</label>
             <select id="edit-role" class="input">
-                <option value="scanner" ${role === 'scanner' ? 'selected' : ''}>Scanner</option>
-                <option value="focal_point" ${role === 'focal_point' ? 'selected' : ''}>Focal Point (view only)</option>
-                <option value="supervisor" ${role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
-                <option value="manager" ${role === 'manager' ? 'selected' : ''}>Manager (view all)</option>
-                <option value="project_manager" ${role === 'project_manager' ? 'selected' : ''}>Project Manager</option>
-                <option value="viewer" ${role === 'viewer' ? 'selected' : ''}>Viewer</option>
+                <option value="scanner" ${role === 'scanner' ? 'selected' : ''}>Contractor Scanner</option>
+                <option value="focal_point" ${role === 'focal_point' ? 'selected' : ''}>Divisional Focal Point</option>
+                <option value="manager" ${role === 'manager' ? 'selected' : ''}>HSE Manager</option>
                 <option value="admin" ${role === 'admin' ? 'selected' : ''}>Admin</option>
                 <option value="executive" ${role === 'executive' ? 'selected' : ''}>Executive</option>
             </select>
         </div>
-        <div id="project-checkboxes" style="max-height:200px;overflow-y:auto;margin-bottom:16px">
-            ${projects.map(p => `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-                <input type="checkbox" value="${p.id}" ${currentIds.has(p.id) ? 'checked' : ''}>
-                <span>${esc(p.name)} <span style="opacity:0.5">(${p.employee_count})</span></span>
-            </label>`).join('')}
-        </div>
+        <div id="access-checkboxes" style="max-height:200px;overflow-y:auto;margin-bottom:16px">${listHtml}</div>
         <div style="display:flex;gap:8px">
             <button class="btn btn-outline" style="flex:1" id="access-cancel">Cancel</button>
             <button id="save-access-btn" class="btn btn-primary" style="flex:1">Save</button>
@@ -898,15 +1111,31 @@ async function editUserAccess(userId, name, role) {
         const newRole = modal.querySelector('#edit-role').value;
         const email = modal.querySelector('#edit-email').value.trim();
         const designation = modal.querySelector('#edit-designation').value.trim();
-        const checked = [...modal.querySelectorAll('#project-checkboxes input:checked')].map(cb => parseInt(cb.value));
-        await api(`/users/${userId}`, {
-            method: 'PUT',
-            body: JSON.stringify({ role: newRole, email, designation, project_ids: checked })
-        });
+        const projectCbs = modal.querySelectorAll('#access-checkboxes input[data-type="project"]:checked');
+        const divisionCbs = modal.querySelectorAll('#access-checkboxes input[data-type="division"]:checked');
+        const project_ids = [...projectCbs].map(cb => parseInt(cb.value));
+        const division_ids = [...divisionCbs].map(cb => parseInt(cb.value));
+        const body = { role: newRole, email, designation };
+        if (newRole === 'focal_point') body.division_ids = division_ids;
+        else body.project_ids = project_ids;
+        await api(`/users/${userId}`, { method: 'PUT', body: JSON.stringify(body) });
         modal.remove();
         toast('User access updated', 'success');
         loadAdmin();
     });
+}
+
+function fillNewUserAccess() {
+    const areaWrap = $('#new-user-areas');
+    if (!areaWrap) return;
+    const role = $('#new-userrole')?.value || 'scanner';
+    const divisions = window._adminDivisions || [];
+    const projects = window._adminProjects || [];
+    if (role === 'focal_point' && divisions.length) {
+        areaWrap.innerHTML = divisions.map(d => `<label class="area-check"><input type="checkbox" data-type="division" value="${d.id}"> ${esc(d.name)}</label>`).join('');
+    } else if (projects.length) {
+        areaWrap.innerHTML = projects.map(p => `<label class="area-check"><input type="checkbox" data-type="project" value="${p.id}"> ${esc(p.name)}</label>`).join('');
+    }
 }
 
 function initAdmin() {
@@ -916,7 +1145,10 @@ function initAdmin() {
     const areaWrap = $('#new-user-areas');
     function toggleAreaAssign() {
         const r = roleSelect.value;
-        if (areaWrap) areaWrap.style.display = (r === 'scanner' || r === 'focal_point') ? 'block' : 'none';
+        if (areaWrap) {
+            areaWrap.style.display = (r === 'scanner' || r === 'focal_point') ? 'block' : 'none';
+            fillNewUserAccess();
+        }
     }
     roleSelect.addEventListener('change', toggleAreaAssign);
     toggleAreaAssign();
@@ -929,14 +1161,18 @@ function initAdmin() {
         const pin = ($('#new-userpin') && $('#new-userpin').value) ? $('#new-userpin').value.trim() : '';
         const role = $('#new-userrole').value;
         if (!username || !display_name) { toast('Username and name required', 'error'); return; }
-        if ((role === 'scanner' || role === 'focal_point') && !email) { toast('Email required for Scanner/Focal Point', 'error'); return; }
-        if ((role === 'scanner' || role === 'focal_point') && !designation) { toast('Designation required for Scanner/Focal Point', 'error'); return; }
+        if ((role === 'scanner' || role === 'focal_point') && !email) { toast('Email required for Contractor Scanner / Divisional Focal Point', 'error'); return; }
+        if ((role === 'scanner' || role === 'focal_point') && !designation) { toast('Designation required for Contractor Scanner / Divisional Focal Point', 'error'); return; }
         let project_ids = [];
-        if (role === 'scanner' || role === 'focal_point') {
-            project_ids = Array.from(document.querySelectorAll('#new-user-areas input:checked')).map(cb => parseInt(cb.value));
-            if (!project_ids.length) { toast('Select at least one area for Scanner/Focal Point', 'error'); return; }
+        let division_ids = [];
+        if (role === 'scanner') {
+            project_ids = Array.from(document.querySelectorAll('#new-user-areas input[data-type="project"]:checked')).map(cb => parseInt(cb.value));
+            if (!project_ids.length) { toast('Select at least one project for Contractor Scanner', 'error'); return; }
+        } else if (role === 'focal_point') {
+            division_ids = Array.from(document.querySelectorAll('#new-user-areas input[data-type="division"]:checked')).map(cb => parseInt(cb.value));
+            if (!division_ids.length) { toast('Select at least one division for Divisional Focal Point', 'error'); return; }
         }
-        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, email, designation, pin: pin || '1234', role, project_ids }) });
+        const res = await api('/users', { method: 'POST', body: JSON.stringify({ username, display_name, email, designation, pin: pin || '1234', role, project_ids, division_ids }) });
         if (res.success) {
             if (res.totp_setup) showTotpGiveModal(res.totp_setup.secret, res.totp_setup.uri);
             toast(res.message, 'success');

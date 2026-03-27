@@ -41,24 +41,21 @@ ROLE_HIERARCHY = {
     'viewer': 10
 }
 
-# 15 areas only. Each site/area has its own data; scanners/focal points see only their assigned areas.
-# Regions: 1-3 = P&C BAB/NEB | 4-9 = P&C GTG | 10-13 = P&C SE | 14-15 = P&C Buhasa
-AREAS = [
-    ('P&C NEB', 'P&C BAB/NEB'),           # 1
-    ('P&C BAB', 'P&C BAB/NEB'),          # 2
-    ('BAB MP', 'P&C BAB/NEB'),           # 3
-    ('P&C GAS(BAB)', 'P&C GTG'),         # 4
-    ('P&C GAS(ASAB)', 'P&C GTG'),        # 5
-    ('P&C (JD)', 'P&C GTG'),             # 6
-    ('P&C (MPS)', 'P&C GTG'),            # 7
-    ('P&C (FUJ)', 'P&C GTG'),            # 8
-    ('P&C (IPS)', 'P&C GTG'),            # 9
-    ('P&C (Qusahwira/Mender QW/MN)', 'P&C SE'),  # 10
-    ('P&C (SHAH)', 'P&C SE'),            # 11
-    ('P&C Asab', 'P&C SE'),              # 12
-    ('P&C Sahil', 'P&C SE'),             # 13
-    ('P&C Buhasa', 'P&C Buhasa'),        # 14
-    ('Buhasa MP', 'P&C Buhasa'),         # 15
+# Hierarchy: Division -> Area -> Project -> Personnel
+# 4 divisions; each has areas; each area has projects; headcount per project
+DIVISIONS = [
+    ('P&C BAB/NEB', [
+        'BAB', 'NEB', 'BAB MP',
+    ]),
+    ('P&C GTG', [
+        'FUJ', 'GAS(ASAB)', 'GAS(BAB)', '(IPS)', '(JD)', '(MPS)',
+    ]),
+    ('P&C SE', [
+        'Shah', 'QW', 'MN',
+    ]),
+    ('P&C BUHASA', [
+        'Buhasa', 'Buhasa MP',
+    ]),
 ]
 
 COMMON_PINS = {'0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
@@ -196,13 +193,29 @@ def init_db():
     conn = get_db()
     try:
         tables = [
-            '''CREATE TABLE IF NOT EXISTS projects (
+            '''CREATE TABLE IF NOT EXISTS divisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''',
+            '''CREATE TABLE IF NOT EXISTS areas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                division_id INTEGER NOT NULL REFERENCES divisions(id),
+                name TEXT NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(division_id, name)
+            )''',
+            '''CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                area_id INTEGER REFERENCES areas(id),
+                name TEXT NOT NULL,
                 description TEXT,
                 agreement_no TEXT,
                 active INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(area_id, name)
             )''',
             '''CREATE TABLE IF NOT EXISTS sites (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,6 +258,12 @@ def init_db():
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 project_id INTEGER NOT NULL REFERENCES projects(id),
                 UNIQUE(user_id, project_id)
+            )''',
+            '''CREATE TABLE IF NOT EXISTS user_division_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                division_id INTEGER NOT NULL REFERENCES divisions(id),
+                UNIQUE(user_id, division_id)
             )''',
             '''CREATE TABLE IF NOT EXISTS auth_tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,8 +325,11 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_att_site ON attendance(site_id)',
             'CREATE INDEX IF NOT EXISTS idx_emp_no ON employees(employee_no)',
             'CREATE INDEX IF NOT EXISTS idx_emp_project ON employees(project_id)',
+            'CREATE INDEX IF NOT EXISTS idx_projects_area ON projects(area_id)',
+            'CREATE INDEX IF NOT EXISTS idx_areas_division ON areas(division_id)',
             'CREATE INDEX IF NOT EXISTS idx_token ON auth_tokens(token)',
             'CREATE INDEX IF NOT EXISTS idx_upa_user ON user_project_access(user_id)',
+            'CREATE INDEX IF NOT EXISTS idx_uda_user ON user_division_access(user_id)',
         ]
         for sql in indexes:
             try:
@@ -319,6 +341,7 @@ def init_db():
         # Add new columns if missing (migrations)
         for alter in [
             'ALTER TABLE projects ADD COLUMN region TEXT',
+            'ALTER TABLE projects ADD COLUMN area_id INTEGER REFERENCES areas(id)',
             'ALTER TABLE users ADD COLUMN email TEXT',
             'ALTER TABLE users ADD COLUMN designation TEXT',
             'ALTER TABLE attendance ADD COLUMN scanner_email TEXT',
@@ -330,16 +353,58 @@ def init_db():
             except Exception:
                 conn.rollback()
 
-        # Seed 15 areas as projects (each area = one project, one site)
-        for area_name, region in AREAS:
-            existing = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
-            if not existing:
-                db_execute(conn, 'INSERT INTO projects (name, region, active) VALUES (?, ?, 1)', (area_name, region))
+        # Seed divisions and areas (Division -> Area -> Project)
+        for div_name, area_names in DIVISIONS:
+            row = db_fetchone(conn, 'SELECT id FROM divisions WHERE name = ?', (div_name,))
+            if not row:
+                db_execute(conn, 'INSERT INTO divisions (name, active) VALUES (?, 1)', (div_name,))
                 conn.commit()
-                proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
-                if proj:
-                    db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (area_name, proj['id']))
+                row = db_fetchone(conn, 'SELECT id FROM divisions WHERE name = ?', (div_name,))
+            div_id = row['id'] if isinstance(row, dict) else row[0]
+            for area_name in area_names:
+                ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
+                if not ar:
+                    db_execute(conn, 'INSERT INTO areas (division_id, name, active) VALUES (?, ?, 1)', (div_id, area_name))
                     conn.commit()
+                    ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
+                area_id = ar['id'] if isinstance(ar, dict) else ar[0]
+                # One default project per area (for pilot; more projects added via Excel)
+                proj = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, area_name))
+                if not proj:
+                    # Also check by name alone (legacy data may lack area_id)
+                    proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
+                    if proj:
+                        db_execute(conn, 'UPDATE projects SET area_id = ? WHERE id = ?', (area_id, proj['id'] if isinstance(proj, dict) else proj[0]))
+                        conn.commit()
+                    else:
+                        try:
+                            db_execute(conn, 'INSERT INTO projects (area_id, name, active) VALUES (?, ?, 1)', (area_id, area_name))
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                        proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
+                if proj:
+                    pid = proj['id'] if isinstance(proj, dict) else proj[0]
+                    site = db_fetchone(conn, 'SELECT id FROM sites WHERE project_id = ?', (pid,))
+                    if not site:
+                        db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (area_name, pid))
+                        conn.commit()
+        # Backfill area_id for existing projects that have region set (legacy)
+        try:
+            for div_name, area_names in DIVISIONS:
+                div_row = db_fetchone(conn, 'SELECT id FROM divisions WHERE name = ?', (div_name,))
+                if not div_row:
+                    continue
+                div_id = div_row['id'] if isinstance(div_row, dict) else div_row[0]
+                for area_name in area_names:
+                    ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
+                    if not ar:
+                        continue
+                    area_id = ar['id'] if isinstance(ar, dict) else ar[0]
+                    db_execute(conn, 'UPDATE projects SET area_id = ? WHERE (area_id IS NULL OR area_id = 0) AND (name = ? OR region = ?)', (area_id, area_name, div_name))
+                    conn.commit()
+        except Exception:
+            conn.rollback()
 
         user = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
         count = user['c'] if isinstance(user, dict) else user[0]
@@ -355,8 +420,8 @@ def init_db():
             print(f'  Add this secret to your authenticator app: {totp_secret}')
             print(f'  Or scan QR for: {uri[:60]}...')
         else:
-            # Ensure any user without 2FA gets a secret so they can sign in (2FA only)
-            rows = db_fetchall(conn, 'SELECT id, username FROM users WHERE totp_secret IS NULL OR totp_enabled = 0')
+            # Non-scanner users without 2FA get a secret so admin login works
+            rows = db_fetchall(conn, "SELECT id, username, role FROM users WHERE (totp_secret IS NULL OR totp_enabled = 0) AND role != 'scanner'")
             for row in rows:
                 uid = row['id'] if isinstance(row, dict) else row[0]
                 uname = (row.get('username') or row[1]) if isinstance(row, dict) else row[1]
@@ -425,6 +490,16 @@ def get_user_projects(conn, user_id, role):
     """Site isolation: each area’s data is separate. Executive and Manager see all; Scanner/Focal Point see only their assigned areas."""
     if role in ('executive', 'admin', 'manager'):
         return None  # see all
+    if role == 'focal_point':
+        rows = db_fetchall(conn, 'SELECT division_id FROM user_division_access WHERE user_id = ?', (user_id,))
+        if not rows:
+            return []
+        div_ids = [r['division_id'] for r in rows]
+        placeholders = ','.join(['?' for _ in div_ids])
+        proj_rows = db_fetchall(conn, f'''SELECT p.id FROM projects p
+            JOIN areas a ON a.id = p.area_id
+            WHERE a.division_id IN ({placeholders}) AND (p.active = 1 OR p.active IS NULL)''', div_ids)
+        return [r['id'] for r in proj_rows]
     rows = db_fetchall(conn, 'SELECT project_id FROM user_project_access WHERE user_id = ?', (user_id,))
     return [r['project_id'] for r in rows]
 
@@ -501,24 +576,30 @@ def check_project_access(conn, user, project_id):
     return int(project_id) in allowed
 
 
+def get_user_divisions(conn, user_id, role):
+    """Division IDs the user can access. Focal point: from user_division_access; others: all (None)."""
+    if role != 'focal_point':
+        return None
+    rows = db_fetchall(conn, 'SELECT division_id FROM user_division_access WHERE user_id = ?', (user_id,))
+    return [r['division_id'] for r in rows]
+
+
 # ============================================================
 # AUTH ROUTES
 # ============================================================
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    """Sign in with 2FA only: username + 6-digit TOTP code. No PIN."""
+    """Two login paths: scanner (username+PIN) and admin (username+2FA)."""
     if not check_ip_rate_limit(request.remote_addr):
         return jsonify({'success': False, 'message': 'Too many attempts. Wait 1 minute.'}), 429
 
     data = request.json or {}
+    login_mode = (data.get('login_mode') or 'admin').strip()
     username = (data.get('username') or '').strip().lower()
-    totp_code = (data.get('totp_code') or '').strip()
 
-    if not username or not totp_code:
-        return jsonify({'success': False, 'message': 'Username and 2FA code required'}), 400
-    if len(totp_code) != 6 or not totp_code.isdigit():
-        return jsonify({'success': False, 'message': 'Enter the 6-digit code from your authenticator app'}), 400
+    if not username:
+        return jsonify({'success': False, 'message': 'Username required'}), 400
 
     conn = get_db()
     try:
@@ -527,19 +608,34 @@ def login():
         if not user:
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
-        secret = (user.get('totp_secret') or '').strip()
-        enabled = user.get('totp_enabled')
-        if not secret or enabled in (None, 0, False, '0'):
-            return jsonify({'success': False, 'message': '2FA not set up. Contact your administrator.'}), 403
-
-        try:
-            totp = pyotp.TOTP(secret)
-            # valid_window=2 allows ±60 sec for clock skew between device and server
-            if not totp.verify(totp_code, valid_window=2):
-                audit(user['id'], '2fa_failed', request.remote_addr)
-                return jsonify({'success': False, 'message': 'Invalid 2FA code. Try the newest code from your app.'}), 401
-        except Exception as e:
-            return jsonify({'success': False, 'message': '2FA verification error. Contact support.'}), 500
+        if login_mode == 'scanner':
+            pin = (data.get('pin') or '').strip()
+            if not pin:
+                return jsonify({'success': False, 'message': 'PIN required'}), 400
+            if user['role'] not in ('scanner',):
+                return jsonify({'success': False, 'message': 'Use Admin sign-in for this account'}), 403
+            if not verify_pin(pin, user['pin_hash']):
+                audit(user['id'], 'login_failed', 'bad PIN')
+                return jsonify({'success': False, 'message': 'Invalid PIN'}), 401
+        else:
+            totp_code = (data.get('totp_code') or '').strip()
+            if not totp_code:
+                return jsonify({'success': False, 'message': '2FA code required'}), 400
+            if len(totp_code) != 6 or not totp_code.isdigit():
+                return jsonify({'success': False, 'message': 'Enter the 6-digit code from your authenticator app'}), 400
+            if user['role'] == 'scanner':
+                return jsonify({'success': False, 'message': 'Use Scanner sign-in for this account'}), 403
+            secret = (user.get('totp_secret') or '').strip()
+            enabled = user.get('totp_enabled')
+            if not secret or enabled in (None, 0, False, '0'):
+                return jsonify({'success': False, 'message': '2FA not set up. Contact your administrator.'}), 403
+            try:
+                totp = pyotp.TOTP(secret)
+                if not totp.verify(totp_code, valid_window=2):
+                    audit(user['id'], '2fa_failed', request.remote_addr)
+                    return jsonify({'success': False, 'message': 'Invalid 2FA code. Try the newest code from your app.'}), 401
+            except Exception:
+                return jsonify({'success': False, 'message': '2FA verification error. Contact support.'}), 500
 
         token = secrets.token_urlsafe(48)
         device = request.headers.get('User-Agent', '')[:200]
@@ -549,7 +645,8 @@ def login():
         conn.commit()
 
         allowed = get_user_projects(conn, user['id'], user['role'])
-        audit(user['id'], 'login', f'Device: {device[:60]}')
+        allowed_divs = get_user_divisions(conn, user['id'], user['role'])
+        audit(user['id'], 'login', f'{login_mode} | {device[:60]}')
 
         return jsonify({
             'success': True,
@@ -559,8 +656,9 @@ def login():
                 'display_name': user['display_name'], 'role': user['role'],
                 'email': user.get('email') or '', 'designation': user.get('designation') or '',
                 'must_change_pin': False,
-                'totp_enabled': True,
-                'allowed_projects': allowed
+                'totp_enabled': bool(user.get('totp_enabled')),
+                'allowed_projects': allowed,
+                'allowed_divisions': allowed_divs
             }
         })
     finally:
@@ -608,6 +706,7 @@ def verify_2fa():
         conn.commit()
 
         allowed = get_user_projects(conn, pending['user_id'], pending['role'])
+        allowed_divs = get_user_divisions(conn, pending['user_id'], pending['role'])
         audit(pending['user_id'], 'login_2fa')
 
         return jsonify({
@@ -618,7 +717,8 @@ def verify_2fa():
                 'email': pending.get('email') or '', 'designation': pending.get('designation') or '',
                 'must_change_pin': bool(pending.get('must_change_pin')),
                 'totp_enabled': True,
-                'allowed_projects': allowed
+                'allowed_projects': allowed,
+                'allowed_divisions': allowed_divs
             }
         })
     finally:
@@ -672,6 +772,7 @@ def auth_me():
     conn = get_db()
     try:
         allowed = get_user_projects(conn, request.user['id'], request.user['role'])
+        allowed_divs = get_user_divisions(conn, request.user['id'], request.user['role'])
     finally:
         conn.close()
     return jsonify({
@@ -680,7 +781,8 @@ def auth_me():
         'email': request.user.get('email') or '', 'designation': request.user.get('designation') or '',
         'must_change_pin': bool(request.user.get('must_change_pin')),
         'totp_enabled': bool(request.user.get('totp_enabled')),
-        'allowed_projects': allowed
+        'allowed_projects': allowed,
+        'allowed_divisions': allowed_divs
     })
 
 
@@ -772,6 +874,11 @@ def api_users():
                 JOIN projects p ON p.id = upa.project_id WHERE upa.user_id = ?
             ''', (row['id'],))
             row['projects'] = access
+            divs = db_fetchall(conn, '''
+                SELECT d.id, d.name FROM user_division_access uda
+                JOIN divisions d ON d.id = uda.division_id WHERE uda.user_id = ?
+            ''', (row['id'],))
+            row['divisions'] = divs
     finally:
         conn.close()
     return jsonify(rows)
@@ -786,6 +893,7 @@ def api_add_user():
     role = data.get('role', 'supervisor')
     pin = data.get('pin', '1234').strip() or '1234'
     project_ids = data.get('project_ids', [])
+    division_ids = data.get('division_ids', [])
 
     if not username or not display_name:
         return jsonify({'success': False, 'message': 'Username and name required'}), 400
@@ -801,20 +909,24 @@ def api_add_user():
             return jsonify({'success': False, 'message': 'Email required for scanner/focal point'}), 400
         if not designation:
             return jsonify({'success': False, 'message': 'Designation required for scanner/focal point'}), 400
-    if role in ('scanner', 'focal_point') and not project_ids:
-        return jsonify({'success': False, 'message': 'Assign at least one area for scanner/focal point'}), 400
+    if role == 'scanner' and not project_ids:
+        return jsonify({'success': False, 'message': 'Assign at least one project for scanner'}), 400
+    if role == 'focal_point' and not division_ids:
+        return jsonify({'success': False, 'message': 'Assign at least one division for divisional focal point'}), 400
 
-    totp_secret = pyotp.random_base32()
+    needs_2fa = role != 'scanner'
+    totp_secret = pyotp.random_base32() if needs_2fa else None
     conn = get_db()
     try:
         db_execute(conn, '''
             INSERT INTO users (username, display_name, email, designation, pin_hash, role, must_change_pin, totp_secret, totp_enabled)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1)
-        ''', (username, display_name, email or None, designation or None, hash_pin(pin), role, totp_secret))
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ''', (username, display_name, email or None, designation or None, hash_pin(pin), role,
+              totp_secret, 1 if needs_2fa else 0))
         conn.commit()
 
         user = db_fetchone(conn, 'SELECT id FROM users WHERE username = ?', (username,))
-        if project_ids and role not in ('executive', 'admin', 'manager'):
+        if project_ids and role == 'scanner':
             for pid in project_ids:
                 try:
                     db_execute(conn, 'INSERT INTO user_project_access (user_id, project_id) VALUES (?, ?)',
@@ -822,14 +934,24 @@ def api_add_user():
                 except Exception:
                     pass
             conn.commit()
+        if division_ids and role == 'focal_point':
+            for did in division_ids:
+                try:
+                    db_execute(conn, 'INSERT INTO user_division_access (user_id, division_id) VALUES (?, ?)',
+                               (user['id'], did))
+                except Exception:
+                    pass
+            conn.commit()
 
         audit(request.user['id'], 'user_created', f'{username} ({role})')
-        uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name='PTC POB Tracker')
-        return jsonify({
-            'success': True,
-            'message': f'User {username} created. Give them the 2FA setup below to sign in.',
-            'totp_setup': {'secret': totp_secret, 'uri': uri}
-        })
+        result = {'success': True}
+        if needs_2fa:
+            uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name='PTC POB Tracker')
+            result['message'] = f'User {username} created. Give them the 2FA setup below to sign in.'
+            result['totp_setup'] = {'secret': totp_secret, 'uri': uri}
+        else:
+            result['message'] = f'Scanner {username} created with PIN {pin}. Share the username and PIN with them.'
+        return jsonify(result)
     except Exception as e:
         if 'UNIQUE' in str(e).upper() or 'unique' in str(e).lower():
             return jsonify({'success': False, 'message': 'Username already exists'}), 400
@@ -857,6 +979,13 @@ def api_update_user(user_id):
             for pid in data['project_ids']:
                 try:
                     db_execute(conn, 'INSERT INTO user_project_access (user_id, project_id) VALUES (?, ?)', (user_id, pid))
+                except Exception:
+                    pass
+        if 'division_ids' in data:
+            db_execute(conn, 'DELETE FROM user_division_access WHERE user_id = ?', (user_id,))
+            for did in data['division_ids']:
+                try:
+                    db_execute(conn, 'INSERT INTO user_division_access (user_id, division_id) VALUES (?, ?)', (user_id, did))
                 except Exception:
                     pass
         conn.commit()
@@ -905,7 +1034,7 @@ def admin_reset_2fa(user_id):
 
 
 # ============================================================
-# PROJECTS / SITES (filtered by user access)
+# DIVISIONS / AREAS / PROJECTS (filtered by user access)
 # ============================================================
 
 @app.route('/')
@@ -913,17 +1042,74 @@ def index():
     return send_from_directory('public', 'index.html')
 
 
+@app.route('/api/divisions')
+@require_auth
+def api_divisions():
+    """List divisions. Focal point sees only their assigned divisions; admin/manager sees all."""
+    conn = get_db()
+    try:
+        if request.user['role'] == 'focal_point':
+            rows = db_fetchall(conn, '''SELECT d.id, d.name, d.active
+                FROM divisions d
+                JOIN user_division_access uda ON uda.division_id = d.id
+                WHERE uda.user_id = ? AND (d.active = 1 OR d.active IS NULL)
+                ORDER BY d.name''', (request.user['id'],))
+        else:
+            rows = db_fetchall(conn, 'SELECT id, name, active FROM divisions WHERE active = 1 OR active IS NULL ORDER BY name')
+    finally:
+        conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/areas')
+@require_auth
+def api_areas():
+    """List areas. Optional division_id= to filter. Respects user access."""
+    division_id = request.args.get('division_id', type=int)
+    conn = get_db()
+    try:
+        query = '''SELECT a.id, a.division_id, a.name, a.active, d.name as division_name
+            FROM areas a
+            JOIN divisions d ON d.id = a.division_id
+            WHERE (a.active = 1 OR a.active IS NULL)'''
+        params = []
+        if division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
+        if request.user['role'] == 'focal_point':
+            query += ' AND EXISTS (SELECT 1 FROM user_division_access uda WHERE uda.user_id = ? AND uda.division_id = a.division_id)'
+            params.append(request.user['id'])
+        query += ' ORDER BY a.name'
+        rows = db_fetchall(conn, query, params)
+    finally:
+        conn.close()
+    return jsonify(rows)
+
+
 @app.route('/api/projects')
 @require_auth
 def api_projects():
+    """List projects with division/area info. Optional area_id= or division_id=. Filtered by role."""
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
     conn = get_db()
     try:
-        query = '''SELECT p.*, COUNT(DISTINCT e.id) as employee_count, COUNT(DISTINCT s.id) as site_count
+        query = '''SELECT p.id, p.area_id, p.name, p.description, p.agreement_no, p.active,
+            a.name as area_name, a.division_id, d.name as division_name,
+            COUNT(DISTINCT e.id) as employee_count, COUNT(DISTINCT s.id) as site_count
             FROM projects p
+            LEFT JOIN areas a ON a.id = p.area_id
+            LEFT JOIN divisions d ON d.id = a.division_id
             LEFT JOIN employees e ON e.project_id = p.id AND e.active = 1
             LEFT JOIN sites s ON s.project_id = p.id AND s.active = 1
-            WHERE p.active = 1'''
+            WHERE (p.active = 1 OR p.active IS NULL)'''
         params = []
+        if area_id:
+            query += ' AND p.area_id = ?'
+            params.append(area_id)
+        if division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
         allowed = get_user_projects(conn, request.user['id'], request.user['role'])
         if allowed is not None:
             if not allowed:
@@ -932,7 +1118,7 @@ def api_projects():
                 placeholders = ','.join(['?' for _ in allowed])
                 query += f' AND p.id IN ({placeholders})'
                 params.extend(allowed)
-        query += ' GROUP BY p.id ORDER BY p.name'
+        query += ' GROUP BY p.id, p.area_id, p.name, a.id, a.name, a.division_id, d.id, d.name ORDER BY COALESCE(d.name, \'\'), COALESCE(a.name, \'\'), p.name'
         rows = db_fetchall(conn, query, params)
     finally:
         conn.close()
@@ -940,19 +1126,30 @@ def api_projects():
 
 
 @app.route('/api/projects', methods=['POST'])
-@require_role('executive', 'admin')
+@require_role('executive', 'admin', 'focal_point')
 def api_add_project():
-    data = request.json
+    data = request.json or {}
+    area_id = data.get('area_id')
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': 'Project name required'}), 400
+    if not area_id and request.user['role'] != 'executive' and request.user['role'] != 'admin':
+        return jsonify({'success': False, 'message': 'Area required'}), 400
     conn = get_db()
     try:
-        db_execute(conn, 'INSERT INTO projects (name, description) VALUES (?, ?)',
-                   (data['name'], data.get('description', '')))
+        db_execute(conn, 'INSERT INTO projects (area_id, name, description, agreement_no, active) VALUES (?, ?, ?, ?, 1)',
+                   (area_id, name, data.get('description', ''), data.get('agreement_no', '')))
         conn.commit()
-        proj = db_fetchone(conn, 'SELECT * FROM projects WHERE name = ?', (data['name'],))
-        audit(request.user['id'], 'project_created', data['name'])
+        proj = db_fetchone(conn, 'SELECT * FROM projects WHERE area_id = ? AND name = ?', (area_id, name))
+        if proj:
+            db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (name, proj['id']))
+            conn.commit()
+        audit(request.user['id'], 'project_created', name)
         return jsonify({'success': True, 'project': proj})
-    except Exception:
-        return jsonify({'success': False, 'message': 'Project already exists'}), 400
+    except Exception as e:
+        if 'UNIQUE' in str(e).upper():
+            return jsonify({'success': False, 'message': 'Project already exists in this area'}), 400
+        return jsonify({'success': False, 'message': str(e)}), 400
     finally:
         conn.close()
 
@@ -1031,12 +1228,14 @@ def api_import_excel():
     f = request.files['file']
     if not f.filename or not f.filename.lower().endswith(('.xlsx', '.xls')):
         return jsonify({'success': False, 'message': 'Upload an .xlsx file'}), 400
-    region = request.form.get('region', 'P&C BAB/NEB').strip()
+    area_id = request.form.get('area_id', type=int)
+    if not area_id:
+        return jsonify({'success': False, 'message': 'Select an area for the import'}), 400
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.xlsx', delete=False) as tmp:
         f.save(tmp.name)
         tmp_path = tmp.name
     try:
-        count, msg = import_excel(tmp_path, region=region)
+        count, msg = import_excel(tmp_path, area_id=area_id)
     finally:
         try:
             os.unlink(tmp_path)
@@ -1566,8 +1765,8 @@ def _cell_str(row, idx):
     return str(v).strip()
 
 
-def import_excel(xlsx_path, region='P&C BAB/NEB'):
-    """Import 4 NEB sheets from the standard 16-column Excel template."""
+def import_excel(xlsx_path, area_id=None):
+    """Import sheets from the standard 16-column Excel template. Projects are created under the given area_id."""
     try:
         import openpyxl
     except ImportError:
@@ -1575,6 +1774,8 @@ def import_excel(xlsx_path, region='P&C BAB/NEB'):
 
     if not os.path.exists(xlsx_path):
         return 0, "Excel file not found"
+    if not area_id:
+        return 0, "Area is required for import"
 
     wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
     conn = get_db()
@@ -1585,11 +1786,12 @@ def import_excel(xlsx_path, region='P&C BAB/NEB'):
             ws = wb[sheet_name]
             project_name = SHEET_TO_PROJECT.get(sheet_name.strip(), f"NEB - {sheet_name.strip()}")
 
-            existing = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (project_name,))
+            # Use provided area_id for new projects
+            existing = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, project_name))
             if not existing:
-                db_execute(conn, 'INSERT INTO projects (name, region, active) VALUES (?, ?, 1)', (project_name, region))
+                db_execute(conn, 'INSERT INTO projects (area_id, name, active) VALUES (?, ?, 1)', (area_id, project_name))
                 conn.commit()
-            proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (project_name,))
+            proj = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, project_name))
             project_id = proj['id']
             site_name = project_name
             existing_site = db_fetchone(conn, 'SELECT id FROM sites WHERE name = ? AND project_id = ?', (site_name, project_id))

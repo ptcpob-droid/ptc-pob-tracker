@@ -22,51 +22,43 @@
                 <span class="logo" style="font-size:2rem">POB</span>
                 <span class="logo-sub" style="font-size:1.2rem">Tracker</span>
             </div>
-            <h2>PTC Login</h2>
-            <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.9rem">Sign in with your username and 6-digit code from your authenticator app</p>
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" id="login-username" class="input" placeholder="Enter username" autocomplete="username" autocapitalize="off">
+
+            <!-- Login mode toggle -->
+            <div class="login-toggle" style="display:flex;gap:0;margin-bottom:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+                <button id="login-mode-scanner" class="btn login-mode-btn active" style="flex:1;border-radius:0;border:none">Contractor Scanner</button>
+                <button id="login-mode-admin" class="btn login-mode-btn" style="flex:1;border-radius:0;border:none;border-left:1px solid var(--border)">Admin / Manager</button>
             </div>
-            <div class="form-group">
-                <label>2FA Code</label>
-                <input type="text" id="login-totp" class="input" placeholder="000000" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" style="text-align:center;font-size:1.25rem;letter-spacing:6px">
+
+            <!-- Scanner login: username + PIN -->
+            <div id="login-scanner-fields">
+                <h2>Scanner Sign In</h2>
+                <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.9rem">Enter your username and PIN provided by admin</p>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="login-username" class="input" placeholder="Enter username" autocomplete="username" autocapitalize="off">
+                </div>
+                <div class="form-group">
+                    <label>PIN</label>
+                    <input type="password" id="login-pin" class="input" placeholder="Enter PIN" inputmode="numeric" pattern="[0-9]*" maxlength="8">
+                </div>
             </div>
+
+            <!-- Admin login: username + 2FA -->
+            <div id="login-admin-fields" style="display:none">
+                <h2>Admin Sign In</h2>
+                <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.9rem">Enter your username and 6-digit code from your authenticator app</p>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="login-admin-username" class="input" placeholder="Enter username" autocomplete="username" autocapitalize="off">
+                </div>
+                <div class="form-group">
+                    <label>2FA Code</label>
+                    <input type="text" id="login-totp" class="input" placeholder="000000" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" style="text-align:center;font-size:1.25rem;letter-spacing:6px">
+                </div>
+            </div>
+
             <div id="login-error" class="login-error"></div>
             <button id="login-btn" class="btn btn-primary btn-lg">Sign in</button>
-        </div>
-    </div>
-
-    <!-- CHANGE PIN SCREEN -->
-    <div id="change-pin-screen" class="login-screen" style="display:none">
-        <div class="login-box">
-            <h2>Change Your PIN</h2>
-            <p style="color:var(--text-dim);margin-bottom:16px;font-size:0.9rem">You must set a new PIN before continuing</p>
-            <div class="form-group">
-                <label>New PIN (4-8 digits)</label>
-                <input type="password" id="new-pin" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="New PIN">
-            </div>
-            <div class="form-group">
-                <label>Confirm PIN</label>
-                <input type="password" id="confirm-pin" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="Confirm PIN">
-            </div>
-            <div id="pin-error" class="login-error"></div>
-            <button id="change-pin-btn" class="btn btn-primary btn-lg">Set New PIN</button>
-        </div>
-    </div>
-
-    <!-- 2FA VERIFICATION SCREEN -->
-    <div id="totp-screen" class="login-screen" style="display:none">
-        <div class="login-box">
-            <h2>Two-Factor Authentication</h2>
-            <p style="color:var(--text-dim);margin-bottom:16px;font-size:0.9rem">Enter the 6-digit code from your authenticator app</p>
-            <div class="form-group">
-                <label>2FA Code</label>
-                <input type="text" id="totp-code" class="input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" style="text-align:center;font-size:1.5rem;letter-spacing:8px">
-            </div>
-            <div id="totp-error" class="login-error"></div>
-            <button id="totp-verify-btn" class="btn btn-primary btn-lg">Verify</button>
-            <button id="totp-back-btn" class="btn btn-outline" style="margin-top:8px;width:100%">Back to Login</button>
         </div>
     </div>
 
@@ -125,10 +117,18 @@
     <div id="setup-overlay" class="overlay hidden">
         <div class="overlay-content">
             <h2>Scanner Setup</h2>
-            <p>Select your project, site, and session</p>
+            <p>Select division, then area, then project, then site and session (all required)</p>
+            <div class="form-group">
+                <label>Division</label>
+                <select id="setup-division" class="input"><option value="">-- Select Division --</option></select>
+            </div>
+            <div class="form-group">
+                <label>Area</label>
+                <select id="setup-area" class="input" disabled><option value="">Select division first</option></select>
+            </div>
             <div class="form-group">
                 <label>Project</label>
-                <select id="setup-project" class="input"><option value="">Loading...</option></select>
+                <select id="setup-project" class="input" disabled><option value="">Select area first</option></select>
             </div>
             <div class="form-group">
                 <label>Site</label>
@@ -142,7 +142,7 @@
                     <button class="btn-session" data-session="EV">6 PM</button>
                 </div>
             </div>
-            <button id="setup-confirm" class="btn btn-primary btn-lg">Start Scanning</button>
+            <button id="setup-confirm" class="btn btn-primary btn-lg" disabled>Start Scanning</button>
         </div>
     </div>
 
@@ -164,7 +164,15 @@
                 <button id="import-confirm" class="btn btn-primary" style="flex:1">Import CSV</button>
             </div>
             <hr style="margin:16px 0;border-color:var(--border)">
-            <p><strong>Excel (4 NEB sheets)</strong> — one project per sheet. Required columns: Agreement No., Name, Nationality, DOB, Designation, Physical Work Location, Residing Camp Name &amp; Location, Employee No./Contractor Ref., Qualification, Date of Joining, Date of Deployment, Latest Periodic Medical (Date), Discipline, Sub-contractor/Manpower Supplier, Remarks.</p>
+            <p><strong>Excel (multiple sheets)</strong> — one project per sheet. Select the <strong>area</strong> under which to create/assign projects (e.g. NEB for pilot). Required columns: Agreement No., Name, Nationality, DOB, Designation, Physical Work Location, Residing Camp Name &amp; Location, Employee No./Contractor Ref., Qualification, Date of Joining, Date of Deployment, Latest Periodic Medical (Date), Discipline, Sub-contractor/Manpower Supplier, Remarks.</p>
+            <div class="form-group">
+                <label>Division</label>
+                <select id="import-excel-division" class="input"><option value="">-- Select Division --</option></select>
+            </div>
+            <div class="form-group">
+                <label>Area</label>
+                <select id="import-excel-area" class="input" disabled><option value="">Select division first</option></select>
+            </div>
             <div class="form-group">
                 <label>Excel (.xlsx)</label>
                 <input type="file" id="import-excel-file" class="input" accept=".xlsx" style="padding:8px">
@@ -181,7 +189,7 @@
         <nav class="tab-nav">
             <button class="tab active" data-tab="scanner">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
-                Scanner
+                Contractor Scanner
             </button>
             <button class="tab" data-tab="dashboard">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -279,28 +287,25 @@
                 <div class="settings-item" style="margin-top:12px;flex-wrap:wrap;gap:6px">
                     <input type="text" id="new-username" class="input" placeholder="Username" style="flex:1;min-width:100px">
                     <input type="text" id="new-displayname" class="input" placeholder="Name (required)" style="flex:1;min-width:100px" title="Scanner name is recorded on each scan">
-                    <input type="email" id="new-useremail" class="input" placeholder="Email (required for Scanner/Focal Point)" style="flex:1;min-width:140px">
-                    <input type="text" id="new-userdesignation" class="input" placeholder="Designation (required for Scanner/Focal Point)" style="flex:1;min-width:120px">
-                    <input type="text" id="new-userpin" class="input" placeholder="PIN (optional; sign-in is 2FA only)" style="flex:0.6;min-width:80px" inputmode="numeric">
+                    <input type="email" id="new-useremail" class="input" placeholder="Email (required for Contractor Scanner / Divisional Focal Point)" style="flex:1;min-width:140px">
+                    <input type="text" id="new-userdesignation" class="input" placeholder="Designation (required for Contractor Scanner / Divisional Focal Point)" style="flex:1;min-width:120px">
+                    <input type="text" id="new-userpin" class="input" placeholder="PIN (for scanners)" style="flex:0.6;min-width:80px" inputmode="numeric">
                     <select id="new-userrole" class="input" style="flex:0.6;min-width:120px">
-                        <option value="scanner">Scanner</option>
-                        <option value="focal_point">Focal Point (view only)</option>
-                        <option value="supervisor">Supervisor</option>
-                        <option value="manager">Manager (view all)</option>
-                        <option value="project_manager">Project Manager</option>
-                        <option value="viewer">Viewer</option>
+                        <option value="scanner">Contractor Scanner</option>
+                        <option value="focal_point">Divisional Focal Point</option>
+                        <option value="manager">HSE Manager</option>
                         <option value="admin">Admin</option>
                         <option value="executive">Executive</option>
                     </select>
                     <button id="btn-add-user" class="btn btn-sm btn-primary">Add User</button>
                 </div>
                 <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
-                <p class="form-hint">Scanner/Focal Point: Name, Email and Designation are required; each scan records the scanner’s identity. Assign at least one area; each site can only access its own data. Focal Points (ADNOC Onshore) are view-only. Manager and Executive see all areas.</p>
+                <p class="form-hint">Contractor Scanner: signs in with username + PIN; assign projects. Divisional Focal Point / HSE Manager / Executive: signs in with username + 2FA.</p>
             </div>
             <div class="settings-section">
-                <h3>Areas</h3>
+                <h3>Divisions &amp; Projects</h3>
                 <div id="projects-list"></div>
-                <p class="form-hint">15 areas: 1–3 P&C BAB/NEB, 4–9 P&C GTG, 10–13 P&C SE, 14–15 P&C Buhasa. Assign areas to Scanner/Focal Point; they cannot see other sites’ data.</p>
+                <p class="form-hint">Division → Area → Project. Assign divisions to Divisional Focal Point or projects to Contractor Scanner.</p>
                 <div class="settings-item" style="margin-top:12px">
                     <input type="text" id="new-project-name" class="input" placeholder="New area name (optional)">
                     <button id="btn-add-project" class="btn btn-sm btn-primary">Add</button>

@@ -65,6 +65,24 @@ body {
     margin-bottom: 8px;
 }
 
+.login-mode-btn {
+    background: var(--bg-input);
+    color: var(--text-dim);
+    padding: 10px 0;
+    font-weight: 500;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.login-mode-btn.active {
+    background: var(--primary);
+    color: #fff;
+}
+.login-mode-btn:hover:not(.active) {
+    background: var(--bg-card);
+    color: var(--text);
+}
+
 /* Top Bar */
 .topbar {
     display: flex;
