@@ -1062,15 +1062,84 @@ async function loadPersonnel(view = 'present') {
 }
 
 // ============================================================
-// TRENDS (line chart + weather)
+// TRENDS (line chart + weather + insights)
 // ============================================================
 let _trendsInited = false;
+
+const AREA_COORDS = {
+    'BAB':              { lat: 23.67, lon: 54.07, label: 'Bab field' },
+    'NEB':              { lat: 23.53, lon: 54.15, label: 'North-East Bab' },
+    'BAB MP':           { lat: 23.65, lon: 54.10, label: 'Bab MP' },
+    'Buhasa':           { lat: 23.45, lon: 53.52, label: 'Bu Hasa field' },
+    'BUIFDP (Buhasa)':  { lat: 23.45, lon: 53.52, label: 'Bu Hasa IFDP' },
+    'BUHASA MP':        { lat: 23.45, lon: 53.52, label: 'Bu Hasa MP' },
+    'Asab/Sahil':       { lat: 23.32, lon: 53.77, label: 'Asab / Sahil field' },
+    'SQM':              { lat: 23.83, lon: 53.68, label: 'Shah / Qusahwira / Mender' },
+    'SHAH':             { lat: 23.83, lon: 53.55, label: 'Shah gas field' },
+    'QW':               { lat: 23.88, lon: 53.65, label: 'Qusahwira' },
+    'MN':               { lat: 23.78, lon: 53.70, label: 'Mender' },
+    'GAS':              { lat: 24.08, lon: 53.75, label: 'ADNOC Gas fields' },
+    'GAS (ASAB)':       { lat: 23.32, lon: 53.75, label: 'Gas – Asab' },
+    'GAS (BAB)':        { lat: 23.67, lon: 54.05, label: 'Gas – Bab' },
+    'TPO':              { lat: 24.18, lon: 52.58, label: 'Terminal & Pipeline Ops' },
+    'GAS/TPO':          { lat: 24.10, lon: 53.10, label: 'Gas / TPO combined' },
+    'WEP':              { lat: 24.05, lon: 53.20, label: 'West-to-East Pipeline' },
+    'FUJ':              { lat: 25.13, lon: 56.33, label: 'Fujairah' },
+    'IPS':              { lat: 24.45, lon: 54.65, label: 'Industrial Park – Abu Dhabi' },
+    'JD':               { lat: 24.18, lon: 52.58, label: 'Jebel Dhanna' },
+    'MPS':              { lat: 24.42, lon: 54.43, label: 'Musaffah' },
+    '_default':         { lat: 23.65, lon: 54.35, label: 'Abu Dhabi onshore region' },
+};
+
 async function initTrends() {
     if (_trendsInited) return;
     _trendsInited = true;
-    const els = ['trend-session', 'trend-designation', 'trend-nationality', 'trend-days', 'trend-dummy'];
-    els.forEach(id => { const el = $('#' + id); if (el) el.addEventListener('change', loadTrends); });
+
+    // Populate division filter
+    const td = $('#trend-division');
+    const divs = await api('/divisions');
+    if (Array.isArray(divs)) td.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+
+    td.addEventListener('change', async () => {
+        const ta = $('#trend-area'), tc = $('#trend-contractor');
+        ta.innerHTML = '<option value="">All Areas</option>';
+        tc.innerHTML = '<option value="">All Contractors</option>';
+        if (td.value) {
+            const areas = await api(`/areas?division_id=${td.value}`);
+            if (Array.isArray(areas)) ta.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}" data-name="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+        }
+        loadTrends();
+    });
+    $('#trend-area')?.addEventListener('change', async () => {
+        const tc = $('#trend-contractor');
+        tc.innerHTML = '<option value="">All Contractors</option>';
+        const params = getTrendFilterParams();
+        const ctrs = await api('/contractors' + (params ? '?' + params : ''));
+        if (Array.isArray(ctrs)) tc.innerHTML = '<option value="">All Contractors</option>' + ctrs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+        loadTrends();
+    });
+
+    const changeEls = ['trend-contractor', 'trend-session', 'trend-designation', 'trend-nationality', 'trend-days', 'trend-dummy'];
+    changeEls.forEach(id => $('#' + id)?.addEventListener('change', loadTrends));
     await loadTrends();
+}
+
+function getTrendFilterParams() {
+    const parts = [];
+    const div = $('#trend-division')?.value;
+    const area = $('#trend-area')?.value;
+    const ctr = $('#trend-contractor')?.value;
+    if (area) parts.push(`area_id=${area}`);
+    else if (div) parts.push(`division_id=${div}`);
+    if (ctr) parts.push(`subcontractor=${encodeURIComponent(ctr)}`);
+    return parts.join('&');
+}
+
+function getSelectedAreaName() {
+    const sel = $('#trend-area');
+    if (!sel || !sel.value) return null;
+    const opt = sel.options[sel.selectedIndex];
+    return opt?.dataset?.name || opt?.textContent || null;
 }
 
 function generateDummyTrend(numDays) {
@@ -1101,8 +1170,8 @@ async function loadTrends() {
         data = generateDummyTrend(numDays);
     } else {
         const params = new URLSearchParams();
-        const filterParams = getDashFilterParams();
-        if (filterParams) filterParams.split('&').forEach(p => { const [k,v] = p.split('='); params.set(k,v); });
+        const fp = getTrendFilterParams();
+        if (fp) fp.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
         const sess = $('#trend-session').value;
         const desig = $('#trend-designation').value;
         const nat = $('#trend-nationality').value;
@@ -1115,53 +1184,81 @@ async function loadTrends() {
     if (!data || !data.labels) return;
 
     const dSel = $('#trend-designation'), nSel = $('#trend-nationality');
-    if (data.designations) {
-        const cur = dSel.value;
-        dSel.innerHTML = '<option value="">All Designations</option>' + data.designations.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
-        dSel.value = cur;
-    }
-    if (data.nationalities) {
-        const cur = nSel.value;
-        nSel.innerHTML = '<option value="">All Nationalities</option>' + data.nationalities.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-        nSel.value = cur;
-    }
+    if (data.designations) { const c = dSel.value; dSel.innerHTML = '<option value="">All Designations</option>' + data.designations.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join(''); dSel.value = c; }
+    if (data.nationalities) { const c = nSel.value; nSel.innerHTML = '<option value="">All Nationalities</option>' + data.nationalities.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join(''); nSel.value = c; }
 
     drawLineChart($('#trend-chart'), data.labels, data.values, data.total);
-
-    // Breakdown table
-    const bd = $('#trend-breakdown');
-    if (bd && data.labels.length) {
-        const recent = data.labels.slice(-7);
-        const recentV = data.values.slice(-7);
-        bd.innerHTML = `<table class="worker-table"><thead><tr><th>Date</th><th>Present</th><th>Total</th><th>%</th></tr></thead><tbody>` +
-            recent.map((d, i) => {
-                const pct = data.total > 0 ? Math.round((recentV[i] / data.total) * 100) : 0;
-                return `<tr><td>${formatHeadcountDate(d)}</td><td><strong>${recentV[i]}</strong></td><td>${data.total}</td><td>${pct}%</td></tr>`;
-            }).join('') + '</tbody></table>';
-    }
-
-    // Weather
+    renderInsights(data);
+    renderBreakdown(data);
     loadWeather(data.labels);
 }
 
-// Abu Dhabi onshore fields approx lat/lon
-const WEATHER_LAT = 23.65, WEATHER_LON = 54.35;
+function renderInsights(data) {
+    const el = $('#trend-insights');
+    if (!el || !data.labels.length) { if (el) el.innerHTML = ''; return; }
+    const vals = data.values, total = data.total || 1, n = vals.length;
+    const sum = vals.reduce((a, b) => a + b, 0);
+    const avgAtt = n > 0 ? sum / n : 0;
+    const avgPct = Math.round((avgAtt / total) * 100);
+    const peakVal = Math.max(...vals);
+    const peakIdx = vals.indexOf(peakVal);
+    const lowVal = Math.min(...vals);
+    const lowIdx = vals.indexOf(lowVal);
+    const weekdayVals = [], weekendVals = [];
+    data.labels.forEach((l, i) => { const dow = new Date(l).getDay(); (dow === 5 || dow === 6) ? weekendVals.push(vals[i]) : weekdayVals.push(vals[i]); });
+    const avgWeekday = weekdayVals.length ? Math.round(weekdayVals.reduce((a, b) => a + b, 0) / weekdayVals.length) : 0;
+    const avgWeekend = weekendVals.length ? Math.round(weekendVals.reduce((a, b) => a + b, 0) / weekendVals.length) : 0;
+    const weekendDrop = avgWeekday > 0 ? Math.round(((avgWeekday - avgWeekend) / avgWeekday) * 100) : 0;
+    const trend7 = n >= 7 ? vals.slice(-7) : vals;
+    const recent = trend7.reduce((a, b) => a + b, 0) / trend7.length;
+    const older = n > 7 ? vals.slice(0, -7).reduce((a, b) => a + b, 0) / (n - 7) : recent;
+    const momentum = older > 0 ? Math.round(((recent - older) / older) * 100) : 0;
+
+    el.innerHTML = `
+        <div class="stat-card"><div class="stat-value green">${avgPct}%</div><div class="stat-label">Avg Attendance</div></div>
+        <div class="stat-card"><div class="stat-value blue">${Math.round(avgAtt)}</div><div class="stat-label">Avg Present / Day</div></div>
+        <div class="stat-card"><div class="stat-value teal">${peakVal}</div><div class="stat-label">Peak Day<br><small>${formatHeadcountDate(data.labels[peakIdx])}</small></div></div>
+        <div class="stat-card"><div class="stat-value orange">${lowVal}</div><div class="stat-label">Lowest Day<br><small>${formatHeadcountDate(data.labels[lowIdx])}</small></div></div>
+        <div class="stat-card"><div class="stat-value purple">${weekendDrop > 0 ? '-' : ''}${weekendDrop}%</div><div class="stat-label">Fri-Sat Drop</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:${momentum >= 0 ? '#22c55e' : '#ef4444'}">${momentum > 0 ? '+' : ''}${momentum}%</div><div class="stat-label">7-Day Momentum</div></div>`;
+}
+
+function renderBreakdown(data) {
+    const bd = $('#trend-breakdown');
+    if (!bd || !data.labels.length) return;
+    bd.innerHTML = `<table class="worker-table"><thead><tr><th>Date</th><th>Day</th><th>Present</th><th>Total</th><th>%</th><th>Trend</th></tr></thead><tbody>` +
+        data.labels.map((d, i) => {
+            const v = data.values[i], total = data.total || 1;
+            const pct = Math.round((v / total) * 100);
+            const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(d).getDay()];
+            const isWE = new Date(d).getDay() === 5 || new Date(d).getDay() === 6;
+            const prev = i > 0 ? data.values[i - 1] : v;
+            const arrow = v > prev ? '↑' : v < prev ? '↓' : '→';
+            const arrowColor = v > prev ? '#22c55e' : v < prev ? '#ef4444' : '#94a3b8';
+            return `<tr style="${isWE ? 'background:rgba(234,179,8,0.05)' : ''}">
+                <td>${formatHeadcountDate(d)}</td><td>${dow}</td><td><strong>${v}</strong></td><td>${total}</td><td>${pct}%</td>
+                <td style="color:${arrowColor};font-weight:600">${arrow} ${v - prev >= 0 ? '+' : ''}${v - prev}</td></tr>`;
+        }).join('') + '</tbody></table>';
+}
+
+function getWeatherCoords() {
+    const areaName = getSelectedAreaName();
+    if (areaName && AREA_COORDS[areaName]) return AREA_COORDS[areaName];
+    return AREA_COORDS['_default'];
+}
 
 async function loadWeather(labels) {
-    const cards = $('#weather-cards');
-    const canvas = $('#weather-chart');
+    const cards = $('#weather-cards'), canvas = $('#weather-chart'), locLabel = $('#weather-location-label');
     if (!cards || !canvas || !labels || !labels.length) return;
     cards.innerHTML = '<div class="spinner"></div>';
 
-    const start = labels[0], end = labels[labels.length - 1];
-    const today = new Date().toISOString().split('T')[0];
-    const useArchive = end < today;
-    const base = useArchive
-        ? 'https://archive-api.open-meteo.com/v1/archive'
-        : 'https://api.open-meteo.com/v1/forecast';
+    const coords = getWeatherCoords();
+    if (locLabel) locLabel.textContent = `${coords.label} (${coords.lat.toFixed(2)}°N, ${coords.lon.toFixed(2)}°E) — Open-Meteo`;
 
-    const url = `${base}?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}&start_date=${start}&end_date=${end}` +
-        `&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,relative_humidity_2m_mean,precipitation_sum` +
+    const start = labels[0], end = labels[labels.length - 1];
+    const url = `https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}` +
+        `&start_date=${start}&end_date=${end}` +
+        `&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,precipitation_sum,relative_humidity_2m_max` +
         `&timezone=Asia%2FDubai`;
 
     try {
@@ -1170,29 +1267,35 @@ async function loadWeather(labels) {
         if (!w.daily || !w.daily.time) throw new Error('No weather data');
 
         const d = w.daily;
-        const avgTemp = d.temperature_2m_max.reduce((a, b) => a + (b || 0), 0) / d.temperature_2m_max.length;
-        const maxWind = Math.max(...d.windspeed_10m_max.filter(v => v != null));
-        const avgHumidity = d.relative_humidity_2m_mean.reduce((a, b) => a + (b || 0), 0) / d.relative_humidity_2m_mean.length;
-        const totalRain = d.precipitation_sum.reduce((a, b) => a + (b || 0), 0);
-        const maxTemp = Math.max(...d.temperature_2m_max.filter(v => v != null));
+        const temps = d.temperature_2m_max || [];
+        const winds = d.wind_speed_10m_max || [];
+        const humid = d.relative_humidity_2m_max || [];
+        const rain = d.precipitation_sum || [];
+        const minTemps = d.temperature_2m_min || [];
+
+        const avg = arr => arr.filter(v => v != null).reduce((a, b) => a + b, 0) / (arr.filter(v => v != null).length || 1);
+        const avgTemp = avg(temps), maxWind = Math.max(...winds.filter(v => v != null), 0);
+        const avgHumid = avg(humid), totalRain = rain.reduce((a, b) => a + (b || 0), 0);
+        const maxTemp = Math.max(...temps.filter(v => v != null), 0);
+        const minTemp = Math.min(...minTemps.filter(v => v != null), 99);
 
         let warn = '';
-        if (maxWind > 40) warn += `High wind alert: ${maxWind.toFixed(0)} km/h recorded. `;
-        if (maxTemp > 48) warn += `Extreme heat: ${maxTemp.toFixed(0)}°C recorded. `;
-        if (totalRain > 5) warn += `Rain: ${totalRain.toFixed(1)} mm total. `;
+        if (maxWind > 40) warn += `High wind: ${maxWind.toFixed(0)} km/h. `;
+        if (maxTemp > 45) warn += `Extreme heat: ${maxTemp.toFixed(0)}°C. `;
+        if (totalRain > 5) warn += `Rainfall: ${totalRain.toFixed(1)} mm. `;
 
-        cards.innerHTML = (warn ? `<div class="weather-warn" style="grid-column:1/-1">⚠ ${warn}Work stoppages may have occurred.</div>` : '') +
-            `<div class="stat-card"><div class="stat-value" style="color:#f59e0b">${avgTemp.toFixed(1)}°C</div><div class="stat-label">Avg Max Temp</div></div>
-            <div class="stat-card"><div class="stat-value" style="color:#06b6d4">${avgHumidity.toFixed(0)}%</div><div class="stat-label">Avg Humidity</div></div>
-            <div class="stat-card"><div class="stat-value" style="color:#8b5cf6">${maxWind.toFixed(0)} km/h</div><div class="stat-label">Max Wind Speed</div></div>
-            <div class="stat-card"><div class="stat-value" style="color:#3b82f6">${totalRain.toFixed(1)} mm</div><div class="stat-label">Total Rainfall</div></div>
+        cards.innerHTML = (warn ? `<div class="weather-warn" style="grid-column:1/-1">⚠ ${warn}Possible work stoppages.</div>` : '') +
+            `<div class="stat-card"><div class="stat-value" style="color:#f59e0b">${avgTemp.toFixed(1)}°C</div><div class="stat-label">Avg High</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#38bdf8">${minTemp.toFixed(1)}°C</div><div class="stat-label">Min Low</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#06b6d4">${avgHumid.toFixed(0)}%</div><div class="stat-label">Avg Humidity</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#8b5cf6">${maxWind.toFixed(0)} km/h</div><div class="stat-label">Max Wind</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#3b82f6">${totalRain.toFixed(1)} mm</div><div class="stat-label">Rainfall</div></div>
             <div class="stat-card"><div class="stat-value" style="color:#ef4444">${maxTemp.toFixed(0)}°C</div><div class="stat-label">Peak Temp</div></div>`;
 
-        drawWeatherChart(canvas, d.time, d.temperature_2m_max, d.windspeed_10m_max, d.relative_humidity_2m_mean);
+        drawWeatherChart(canvas, d.time, temps, winds, humid);
     } catch (e) {
-        cards.innerHTML = `<div class="empty-state">Weather data unavailable (${e.message})</div>`;
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        cards.innerHTML = `<div class="empty-state">Weather unavailable (${e.message})</div>`;
+        const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 }
 
@@ -1201,19 +1304,15 @@ function drawWeatherChart(canvas, dates, temps, winds, humidity) {
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
     canvas.width = w * dpr; canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
     if (!dates || !dates.length) return;
 
     const pad = { top: 30, right: 50, bottom: 40, left: 50 };
     const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
-    const n = dates.length;
-    const stepX = n > 1 ? cw / (n - 1) : cw;
-
+    const n = dates.length, stepX = n > 1 ? cw / (n - 1) : cw;
     const allVals = [...(temps || []), ...(winds || []), ...(humidity || [])].filter(v => v != null);
     const maxV = Math.max(...allVals, 1);
 
-    // Grid
     ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
         const y = pad.top + ch - (ch * i / 4);
@@ -1221,47 +1320,22 @@ function drawWeatherChart(canvas, dates, temps, winds, humidity) {
         ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
         ctx.fillText(Math.round(maxV * i / 4), pad.left - 6, y + 3);
     }
-
     function drawLine(data, color, dash) {
         if (!data) return;
-        ctx.setLineDash(dash || []);
-        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+        ctx.setLineDash(dash || []); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
         ctx.beginPath();
-        data.forEach((v, i) => {
-            if (v == null) return;
-            const x = pad.left + i * stepX;
-            const y = pad.top + ch - (ch * v / maxV);
-            i === 0 || data[i - 1] == null ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        });
+        data.forEach((v, i) => { if (v == null) return; const x = pad.left + i * stepX, y = pad.top + ch - (ch * v / maxV); i === 0 || data[i - 1] == null ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
         ctx.stroke(); ctx.setLineDash([]);
     }
+    drawLine(temps, '#f59e0b'); drawLine(winds, '#8b5cf6', [4, 3]); drawLine(humidity, '#06b6d4', [2, 2]);
 
-    drawLine(temps, '#f59e0b');
-    drawLine(winds, '#8b5cf6', [4, 3]);
-    drawLine(humidity, '#06b6d4', [2, 2]);
-
-    // X labels
     ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
     const step = Math.max(1, Math.floor(n / 7));
-    dates.forEach((d, i) => {
-        if (i % step === 0 || i === n - 1) {
-            const x = pad.left + i * stepX;
-            const parts = d.split('-');
-            ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 14);
-        }
-    });
+    dates.forEach((d, i) => { if (i % step === 0 || i === n - 1) { const x = pad.left + i * stepX; const parts = d.split('-'); ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 14); } });
 
-    // Legend
     const legend = [['Temp °C', '#f59e0b'], ['Wind km/h', '#8b5cf6'], ['Humidity %', '#06b6d4']];
-    let lx = pad.left;
-    ctx.font = '11px Inter, sans-serif';
-    legend.forEach(([label, color]) => {
-        ctx.fillStyle = color;
-        ctx.fillRect(lx, 6, 14, 3);
-        ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left';
-        ctx.fillText(label, lx + 18, 12);
-        lx += ctx.measureText(label).width + 34;
-    });
+    let lx = pad.left; ctx.font = '11px Inter, sans-serif';
+    legend.forEach(([label, color]) => { ctx.fillStyle = color; ctx.fillRect(lx, 6, 14, 3); ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 18, 12); lx += ctx.measureText(label).width + 34; });
 }
 
 function drawLineChart(canvas, labels, values, total) {

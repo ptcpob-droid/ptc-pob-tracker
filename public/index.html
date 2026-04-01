@@ -332,41 +332,53 @@
 
         <!-- Trends Tab -->
         <div id="tab-trends" class="tab-content">
-            <div class="dash-filter-bar" style="flex-wrap:wrap">
-                <select id="trend-session" class="input" style="max-width:130px">
+            <!-- Row 1: Location filters -->
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
+                <select id="trend-division" class="input"><option value="">All Divisions</option></select>
+                <select id="trend-area" class="input"><option value="">All Areas</option></select>
+                <select id="trend-contractor" class="input"><option value="">All Contractors</option></select>
+            </div>
+            <!-- Row 2: Data filters -->
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px">
+                <select id="trend-session" class="input" style="max-width:110px">
                     <option value="AM">9 AM</option>
                     <option value="EV">7 PM</option>
                 </select>
                 <select id="trend-designation" class="input"><option value="">All Designations</option></select>
                 <select id="trend-nationality" class="input"><option value="">All Nationalities</option></select>
-                <select id="trend-days" class="input" style="max-width:130px">
+                <select id="trend-days" class="input" style="max-width:120px">
                     <option value="7">Last 7 days</option>
                     <option value="14">Last 14 days</option>
                     <option value="30" selected>Last 30 days</option>
                 </select>
                 <label class="dummy-toggle" title="Show sample data to preview the chart">
-                    <input type="checkbox" id="trend-dummy"> Demo Data
+                    <input type="checkbox" id="trend-dummy"> Demo
                 </label>
             </div>
 
+            <!-- Insights cards -->
+            <div id="trend-insights" class="stats-grid" style="margin-top:16px"></div>
+
+            <!-- Attendance chart -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Attendance Trend</h3>
                 <canvas id="trend-chart" height="280" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
             </div>
 
-            <!-- Weather Panel -->
+            <!-- Weather -->
             <div class="section">
                 <div class="section-header" style="margin-bottom:8px">
                     <h3>Weather Conditions</h3>
-                    <span class="text-dim" style="font-size:0.8rem">Abu Dhabi onshore fields — Open-Meteo</span>
+                    <span id="weather-location-label" class="text-dim" style="font-size:0.8rem"></span>
                 </div>
                 <div id="weather-cards" class="stats-grid" style="margin-bottom:12px"></div>
                 <canvas id="weather-chart" height="200" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
             </div>
 
+            <!-- Breakdown table -->
             <div class="section">
-                <h3 style="margin-bottom:12px">Breakdown</h3>
-                <div id="trend-breakdown" class="table-wrap"></div>
+                <h3 style="margin-bottom:12px">Daily Breakdown</h3>
+                <div id="trend-breakdown" class="table-wrap" style="max-height:400px;overflow:auto"></div>
             </div>
         </div>
 

@@ -1734,11 +1734,12 @@ def api_stats():
 @app.route('/api/trends')
 @require_auth
 def api_trends():
-    """Attendance trend over N days, optionally filtered by session, designation, nationality."""
+    """Attendance trend over N days, optionally filtered by session, designation, nationality, subcontractor."""
     days = int(request.args.get('days', 30))
     session = request.args.get('session', '').upper()
     designation = request.args.get('designation', '').strip()
     nationality = request.args.get('nationality', '').strip()
+    subcontractor = request.args.get('subcontractor', '').strip()
     project_id = request.args.get('project_id', '')
     area_id = request.args.get('area_id', type=int)
     division_id = request.args.get('division_id', type=int)
@@ -1763,6 +1764,9 @@ def api_trends():
         if nationality:
             query += ' AND e.nationality = ?'
             params.append(nationality)
+        if subcontractor:
+            query += ' AND e.subcontractor = ?'
+            params.append(subcontractor)
         if project_id:
             query += ' AND att.project_id = ?'
             params.append(project_id)
@@ -1787,6 +1791,9 @@ def api_trends():
         if nationality:
             tq += ' AND e.nationality = ?'
             tp.append(nationality)
+        if subcontractor:
+            tq += ' AND e.subcontractor = ?'
+            tp.append(subcontractor)
         if project_id:
             tq += ' AND e.project_id = ?'
             tp.append(project_id)
