@@ -44,19 +44,28 @@ ROLE_HIERARCHY = {
 # Hierarchy: Division -> Area -> Project -> Personnel
 # 4 divisions; each has areas; each area has projects; headcount per project
 DIVISIONS = [
-    ('P&C BAB/NEB', [
-        'BAB', 'NEB', 'BAB MP',
-    ]),
-    ('P&C GTG', [
-        'FUJ', 'GAS(ASAB)', 'GAS(BAB)', '(IPS)', '(JD)', '(MPS)',
-    ]),
-    ('P&C SE', [
-        'Shah', 'QW', 'MN',
-    ]),
-    ('P&C BUHASA', [
-        'Buhasa', 'Buhasa MP',
-    ]),
+    ('P&C BAB/NEB', ['BAB', 'NEB', 'BAB MP']),
+    ('P&C GTG', ['FUJ', 'GAS (ASAB)', 'GAS (BAB)', 'IPS', 'JD', 'MPS']),
+    ('P&C SE', ['SHAH', 'QW', 'MN']),
+    ('P&C BUHASA', ['BUHASA', 'BUHASA MP']),
 ]
+
+AREA_ALIASES = {
+    'P&C SHAH': 'SHAH', 'P&C (SHAH)': 'SHAH', 'Shah': 'SHAH', 'shah': 'SHAH',
+    'P&C Qusahwira': 'QW', 'P&C (Qusahwira/Mender QW/MN)': 'QW', 'Qusahwira': 'QW',
+    'P&C Mender': 'MN', 'Mender': 'MN',
+    'P&C (FUJ)': 'FUJ', 'P&C FUJ': 'FUJ', 'fuj': 'FUJ', 'Fuj': 'FUJ',
+    'P&C (IPS)': 'IPS', '(IPS)': 'IPS',
+    'P&C (JD)': 'JD', '(JD)': 'JD',
+    'P&C (MPS)': 'MPS', '(MPS)': 'MPS',
+    'P&C GAS(BAB)': 'GAS (BAB)', 'GAS(BAB)': 'GAS (BAB)',
+    'P&C GAS(ASAB)': 'GAS (ASAB)', 'GAS(ASAB)': 'GAS (ASAB)',
+    'P&C Asab': 'GAS (ASAB)',
+    'P&C Sahil': 'SHAH',
+    'P&C Buhasa': 'BUHASA', 'Buhasa': 'BUHASA', 'buhasa': 'BUHASA',
+    'Buhasa MP': 'BUHASA MP', 'P&C Buhasa MP': 'BUHASA MP',
+    'BAB MP': 'BAB MP',
+}
 
 COMMON_PINS = {'0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
                '1234', '4321', '1122', '1212', '0123', '9876', '5678', '8765'}
@@ -368,7 +377,26 @@ def init_db():
                     conn.commit()
                     ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
                 area_id = ar['id'] if isinstance(ar, dict) else ar[0]
-                # No dummy projects — real projects come from Excel import only
+        # Normalize old area names to canonical names
+        for old_name, canonical in AREA_ALIASES.items():
+            try:
+                existing = db_fetchone(conn, 'SELECT id FROM areas WHERE name = ?', (old_name,))
+                if existing:
+                    canon_exists = db_fetchone(conn, 'SELECT id FROM areas WHERE name = ? AND id != ?',
+                                               (canonical, existing['id'] if isinstance(existing, dict) else existing[0]))
+                    if canon_exists:
+                        old_id = existing['id'] if isinstance(existing, dict) else existing[0]
+                        canon_id = canon_exists['id'] if isinstance(canon_exists, dict) else canon_exists[0]
+                        db_execute(conn, 'UPDATE projects SET area_id = ? WHERE area_id = ?', (canon_id, old_id))
+                        db_execute(conn, 'UPDATE user_division_access SET division_id = division_id WHERE 1=0')
+                        db_execute(conn, 'DELETE FROM areas WHERE id = ?', (old_id,))
+                    else:
+                        db_execute(conn, 'UPDATE areas SET name = ? WHERE id = ?',
+                                   (canonical, existing['id'] if isinstance(existing, dict) else existing[0]))
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+
         # Backfill area_id for existing projects that have region set (legacy)
         try:
             for div_name, area_names in DIVISIONS:
@@ -1064,6 +1092,121 @@ def api_areas():
     finally:
         conn.close()
     return jsonify(rows)
+
+
+@app.route('/api/divisions', methods=['POST'])
+@require_role('executive', 'admin')
+def api_add_division():
+    name = (request.json or {}).get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': 'Name required'}), 400
+    conn = get_db()
+    try:
+        existing = db_fetchone(conn, 'SELECT id FROM divisions WHERE name = ?', (name,))
+        if existing:
+            return jsonify({'success': False, 'message': 'Division already exists'}), 409
+        db_execute(conn, 'INSERT INTO divisions (name, active) VALUES (?, 1)', (name,))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'division_added', name)
+    return jsonify({'success': True})
+
+
+@app.route('/api/divisions/<int:div_id>', methods=['PUT'])
+@require_role('executive', 'admin')
+def api_update_division(div_id):
+    name = (request.json or {}).get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': 'Name required'}), 400
+    conn = get_db()
+    try:
+        db_execute(conn, 'UPDATE divisions SET name = ? WHERE id = ?', (name, div_id))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'division_renamed', f'#{div_id} -> {name}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/divisions/<int:div_id>', methods=['DELETE'])
+@require_role('executive', 'admin')
+def api_delete_division(div_id):
+    conn = get_db()
+    try:
+        db_execute(conn, 'UPDATE divisions SET active = 0 WHERE id = ?', (div_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'division_deleted', f'#{div_id}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/areas', methods=['POST'])
+@require_role('executive', 'admin')
+def api_add_area():
+    data = request.json or {}
+    name = data.get('name', '').strip()
+    division_id = data.get('division_id')
+    if not name or not division_id:
+        return jsonify({'success': False, 'message': 'Name and division_id required'}), 400
+    conn = get_db()
+    try:
+        existing = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (division_id, name))
+        if existing:
+            return jsonify({'success': False, 'message': 'Area already exists in this division'}), 409
+        db_execute(conn, 'INSERT INTO areas (division_id, name, active) VALUES (?, ?, 1)', (division_id, name))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'area_added', name)
+    return jsonify({'success': True})
+
+
+@app.route('/api/areas/<int:area_id>', methods=['PUT'])
+@require_role('executive', 'admin')
+def api_update_area(area_id):
+    name = (request.json or {}).get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': 'Name required'}), 400
+    conn = get_db()
+    try:
+        db_execute(conn, 'UPDATE areas SET name = ? WHERE id = ?', (name, area_id))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'area_renamed', f'#{area_id} -> {name}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/areas/<int:area_id>', methods=['DELETE'])
+@require_role('executive', 'admin')
+def api_delete_area(area_id):
+    conn = get_db()
+    try:
+        db_execute(conn, 'UPDATE areas SET active = 0 WHERE id = ?', (area_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'area_deleted', f'#{area_id}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@require_role('executive', 'admin')
+def api_delete_user(user_id):
+    if user_id == request.user['id']:
+        return jsonify({'success': False, 'message': 'Cannot delete yourself'}), 400
+    conn = get_db()
+    try:
+        db_execute(conn, 'DELETE FROM user_project_access WHERE user_id = ?', (user_id,))
+        db_execute(conn, 'DELETE FROM user_division_access WHERE user_id = ?', (user_id,))
+        db_execute(conn, 'DELETE FROM users WHERE id = ?', (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'user_deleted', f'#{user_id}')
+    return jsonify({'success': True})
 
 
 @app.route('/api/projects')

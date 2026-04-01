@@ -357,9 +357,10 @@
 
         <!-- Admin Tab (admin only) -->
         <div id="tab-admin" class="tab-content">
+            <!-- Manage Users -->
             <div class="settings-section">
                 <h3>Manage Users</h3>
-                <p class="form-hint" style="margin-bottom:12px">Add scanners (PIN login) or admin/focal point users (2FA login).</p>
+                <p class="form-hint" style="margin-bottom:12px">Scanner = PIN login, others = 2FA login. Click Edit to change access.</p>
                 <div id="users-list"></div>
                 <details style="margin-top:12px">
                     <summary style="cursor:pointer;color:var(--primary);font-weight:600;margin-bottom:8px">+ Add New User</summary>
@@ -381,6 +382,27 @@
                     <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
                 </details>
             </div>
+
+            <!-- Manage Divisions & Areas -->
+            <div class="settings-section">
+                <h3>Divisions &amp; Areas</h3>
+                <p class="form-hint" style="margin-bottom:12px">Edit or delete divisions/areas. Names must be consistent (e.g. SHAH, QW, MN, FUJ).</p>
+                <div id="div-area-list"></div>
+                <details style="margin-top:12px">
+                    <summary style="cursor:pointer;color:var(--primary);font-weight:600;margin-bottom:8px">+ Add Division or Area</summary>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                        <input type="text" id="new-div-name" class="input" placeholder="New Division name" style="flex:1;min-width:140px">
+                        <button id="btn-add-div" class="btn btn-sm btn-primary">Add Division</button>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                        <select id="new-area-div" class="input" style="flex:0.6;min-width:140px"><option value="">Select Division</option></select>
+                        <input type="text" id="new-area-name" class="input" placeholder="New Area name" style="flex:1;min-width:140px">
+                        <button id="btn-add-area" class="btn btn-sm btn-primary">Add Area</button>
+                    </div>
+                </details>
+            </div>
+
+            <!-- 2FA & Audit -->
             <div class="settings-section">
                 <h3>My 2FA</h3>
                 <div id="my-2fa-status"></div>

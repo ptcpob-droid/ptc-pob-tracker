@@ -576,6 +576,11 @@ tr:last-child td { border-bottom: none; }
 .badge-danger { background: #dc2626; color: #fff; }
 .badge-warning { background: #d97706; color: #fff; }
 
+/* Division/Area management */
+.da-div-block { transition: box-shadow 0.15s; }
+.da-div-block:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.da-area-row:last-child { border-bottom: none; }
+
 /* Trends tab */
 #tab-trends .dash-filter-bar { margin-bottom: 16px; }
 #tab-trends canvas { display: block; max-height: 320px; }

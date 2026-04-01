@@ -1222,9 +1222,10 @@ async function loadAdmin() {
             <div class="scan-item-sub">@${esc(u.username)}${contact ? ' | ' + contact : ''} | ${projAccess} | Last: ${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'never'}</div>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
-            <button class="btn btn-sm btn-outline" data-action="access" data-idx="${idx}">Access</button>
+            <button class="btn btn-sm btn-outline" data-action="access" data-idx="${idx}">Edit</button>
             <button class="btn btn-sm btn-outline" data-action="resetpin" data-id="${u.id}">Reset PIN</button>
             ${u.totp_enabled ? `<button class="btn btn-sm btn-outline" data-action="reset2fa" data-id="${u.id}">Reset 2FA</button>` : ''}
+            <button class="btn btn-sm btn-danger" data-action="deleteuser" data-id="${u.id}" data-name="${esc(u.display_name)}">Delete</button>
         </div>
     </div>`}).join('');
 
@@ -1241,6 +1242,12 @@ async function loadAdmin() {
             resetUserPin(id);
         } else if (action === 'reset2fa') {
             adminReset2FA(id);
+        } else if (action === 'deleteuser') {
+            const name = btn.dataset.name || '';
+            if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
+            const res = await api(`/users/${id}`, { method: 'DELETE' });
+            toast(res.success ? 'User deleted' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+            if (res.success) loadAdmin();
         }
     };
 
@@ -1269,6 +1276,74 @@ async function loadAdmin() {
             </div>
             <div class="scan-item-time">${new Date(a.created_at).toLocaleString()}</div>
         </div>`).join('') || '<div class="empty-state">No audit entries</div>';
+    }
+}
+
+async function loadDivAreas() {
+    const [divisions, areas] = await Promise.all([api('/divisions'), api('/areas')]);
+    if (!Array.isArray(divisions)) return;
+    const areasByDiv = {};
+    (Array.isArray(areas) ? areas : []).forEach(a => {
+        if (!areasByDiv[a.division_id]) areasByDiv[a.division_id] = [];
+        areasByDiv[a.division_id].push(a);
+    });
+
+    const container = $('#div-area-list');
+    if (!container) return;
+    container.innerHTML = divisions.map(d => {
+        const areasHtml = (areasByDiv[d.id] || []).map(a =>
+            `<div class="da-area-row" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 24px;border-bottom:1px solid var(--border)">
+                <span style="flex:1">${esc(a.name)}</span>
+                <button class="btn btn-sm btn-outline" data-rename-area="${a.id}" data-current="${esc(a.name)}" title="Rename">Rename</button>
+                <button class="btn btn-sm btn-danger" data-delete-area="${a.id}" data-name="${esc(a.name)}" title="Delete">×</button>
+            </div>`).join('');
+        return `<div class="da-div-block" style="margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card)">
+                <strong style="flex:1">${esc(d.name)}</strong>
+                <button class="btn btn-sm btn-outline" data-rename-div="${d.id}" data-current="${esc(d.name)}">Rename</button>
+                <button class="btn btn-sm btn-danger" data-delete-div="${d.id}" data-name="${esc(d.name)}">×</button>
+            </div>
+            ${areasHtml || '<div style="padding:6px 12px 6px 24px;color:var(--text-dim);font-size:0.85rem">No areas</div>'}
+        </div>`;
+    }).join('') || '<div class="empty-state">No divisions</div>';
+
+    container.onclick = async (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        if (btn.dataset.renameDev || btn.dataset.renameDiv) {
+            const id = btn.dataset.renameDiv;
+            const cur = btn.dataset.current || '';
+            const newName = prompt('Rename division:', cur);
+            if (!newName || newName === cur) return;
+            const res = await api(`/divisions/${id}`, { method: 'PUT', body: JSON.stringify({ name: newName }) });
+            toast(res.success ? 'Division renamed' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+            if (res.success) loadDivAreas();
+        } else if (btn.dataset.deleteDiv) {
+            if (!confirm(`Delete division "${btn.dataset.name}"? Areas under it will also be hidden.`)) return;
+            const res = await api(`/divisions/${btn.dataset.deleteDiv}`, { method: 'DELETE' });
+            toast(res.success ? 'Division deleted' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+            if (res.success) loadDivAreas();
+        } else if (btn.dataset.renameArea) {
+            const id = btn.dataset.renameArea;
+            const cur = btn.dataset.current || '';
+            const newName = prompt('Rename area:', cur);
+            if (!newName || newName === cur) return;
+            const res = await api(`/areas/${id}`, { method: 'PUT', body: JSON.stringify({ name: newName }) });
+            toast(res.success ? 'Area renamed' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+            if (res.success) loadDivAreas();
+        } else if (btn.dataset.deleteArea) {
+            if (!confirm(`Delete area "${btn.dataset.name}"?`)) return;
+            const res = await api(`/areas/${btn.dataset.deleteArea}`, { method: 'DELETE' });
+            toast(res.success ? 'Area deleted' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+            if (res.success) loadDivAreas();
+        }
+    };
+
+    // Populate "Add Area" division dropdown
+    const addAreaDiv = $('#new-area-div');
+    if (addAreaDiv) {
+        addAreaDiv.innerHTML = '<option value="">Select Division</option>' +
+            divisions.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
     }
 }
 
@@ -1380,13 +1455,24 @@ function fillNewUserAccess() {
     const projects = window._adminProjects || [];
     if (role === 'focal_point' && divisions.length) {
         areaWrap.innerHTML = divisions.map(d => `<label class="area-check"><input type="checkbox" data-type="division" value="${d.id}"> ${esc(d.name)}</label>`).join('');
-    } else if (projects.length) {
-        areaWrap.innerHTML = projects.map(p => `<label class="area-check"><input type="checkbox" data-type="project" value="${p.id}"> ${esc(p.name)}</label>`).join('');
+    } else if (role === 'scanner' && projects.length) {
+        const grouped = {};
+        projects.forEach(p => {
+            const key = p.division_name ? `${p.division_name} / ${p.area_name || ''}` : (p.area_name || 'Other');
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(p);
+        });
+        areaWrap.innerHTML = Object.entries(grouped).map(([group, projs]) =>
+            `<div style="margin-bottom:6px"><div style="font-weight:600;font-size:0.8rem;color:var(--text-dim);margin-bottom:2px">${esc(group)}</div>` +
+            projs.map(p => `<label class="area-check" style="padding-left:12px"><input type="checkbox" data-type="project" value="${p.id}"> ${esc(p.name)} <span style="opacity:0.5">(${p.employee_count ?? 0})</span></label>`).join('') +
+            '</div>'
+        ).join('');
     }
 }
 
 function initAdmin() {
     loadAdmin();
+    loadDivAreas();
 
     const roleSelect = $('#new-userrole');
     const areaWrap = $('#new-user-areas');
@@ -1432,19 +1518,24 @@ function initAdmin() {
         }
     });
 
-    $('#btn-add-project')?.addEventListener('click', async () => {
-        const name = $('#new-project-name')?.value.trim();
-        if (!name) return;
-        const res = await api('/projects', { method: 'POST', body: JSON.stringify({ name }) });
-        toast(res.success ? 'Project added' : (res.message || 'Failed'), res.success ? 'success' : 'error');
-        if (res.success) { $('#new-project-name').value = ''; loadAdmin(); }
+    // Add Division
+    $('#btn-add-div')?.addEventListener('click', async () => {
+        const name = $('#new-div-name')?.value.trim();
+        if (!name) { toast('Enter a division name', 'error'); return; }
+        const res = await api('/divisions', { method: 'POST', body: JSON.stringify({ name }) });
+        toast(res.success ? 'Division added' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+        if (res.success) { $('#new-div-name').value = ''; loadDivAreas(); loadAdmin(); }
     });
 
-    $('#btn-open-import')?.addEventListener('click', () => $('#import-modal')?.classList.remove('hidden'));
-    $('#btn-reimport')?.addEventListener('click', async () => {
-        const res = await api('/import-roster', { method: 'POST' });
-        toast(res.message || 'Done', res.success ? 'success' : 'error');
-        loadAdmin();
+    // Add Area
+    $('#btn-add-area')?.addEventListener('click', async () => {
+        const division_id = parseInt($('#new-area-div')?.value);
+        const name = $('#new-area-name')?.value.trim();
+        if (!division_id) { toast('Select a division first', 'error'); return; }
+        if (!name) { toast('Enter an area name', 'error'); return; }
+        const res = await api('/areas', { method: 'POST', body: JSON.stringify({ name, division_id }) });
+        toast(res.success ? 'Area added' : (res.message || 'Failed'), res.success ? 'success' : 'error');
+        if (res.success) { $('#new-area-name').value = ''; loadDivAreas(); }
     });
 }
 
