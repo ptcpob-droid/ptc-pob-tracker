@@ -575,3 +575,10 @@ tr:last-child td { border-bottom: none; }
 .badge-2fa { background: #059669; color: #fff; }
 .badge-danger { background: #dc2626; color: #fff; }
 .badge-warning { background: #d97706; color: #fff; }
+
+/* Trends tab */
+#tab-trends .dash-filter-bar { margin-bottom: 16px; }
+#tab-trends canvas { display: block; max-height: 320px; }
+#trend-breakdown table { width: 100%; border-collapse: collapse; }
+#trend-breakdown th, #trend-breakdown td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+#trend-breakdown th { font-weight: 600; }

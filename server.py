@@ -1482,12 +1482,102 @@ def api_stats():
 
         total_emp = db_fetchone(conn, eq, ep)['c']
         today_am = count_session('AM')
-        today_pm = count_session('PM')
         today_ev = count_session('EV')
         total_projects = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects WHERE active = 1')['c']
     finally:
         conn.close()
-    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_pm': today_pm, 'today_ev': today_ev, 'total_projects': total_projects, 'date': today})
+    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_ev': today_ev, 'total_projects': total_projects, 'date': today})
+
+
+@app.route('/api/trends')
+@require_auth
+def api_trends():
+    """Attendance trend over N days, optionally filtered by session, designation, nationality."""
+    days = int(request.args.get('days', 30))
+    session = request.args.get('session', '').upper()
+    designation = request.args.get('designation', '').strip()
+    nationality = request.args.get('nationality', '').strip()
+    project_id = request.args.get('project_id', '')
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
+
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    conn = get_db()
+    try:
+        query = '''SELECT att.scan_date, COUNT(DISTINCT att.employee_no) as count
+            FROM attendance att
+            JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+            LEFT JOIN projects p ON p.id = att.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            WHERE att.scan_date >= ? AND att.scan_date <= ? AND e.active = 1'''
+        params = [start.isoformat(), end.isoformat()]
+        if session:
+            query += ' AND att.session = ?'
+            params.append(session)
+        if designation:
+            query += ' AND e.designation = ?'
+            params.append(designation)
+        if nationality:
+            query += ' AND e.nationality = ?'
+            params.append(nationality)
+        if project_id:
+            query += ' AND att.project_id = ?'
+            params.append(project_id)
+        if area_id:
+            query += ' AND p.area_id = ?'
+            params.append(area_id)
+        if division_id:
+            query += ' AND ar.division_id = ?'
+            params.append(division_id)
+        query, params = apply_project_filter(conn, query, params, request.user, 'att')
+        query += ' GROUP BY att.scan_date ORDER BY att.scan_date'
+        rows = db_fetchall(conn, query, params)
+
+        # Total workforce (filtered same way)
+        tq = '''SELECT COUNT(DISTINCT e.id) as c FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id WHERE e.active = 1'''
+        tp = []
+        if designation:
+            tq += ' AND e.designation = ?'
+            tp.append(designation)
+        if nationality:
+            tq += ' AND e.nationality = ?'
+            tp.append(nationality)
+        if project_id:
+            tq += ' AND e.project_id = ?'
+            tp.append(project_id)
+        if area_id:
+            tq += ' AND p.area_id = ?'
+            tp.append(area_id)
+        if division_id:
+            tq += ' AND ar.division_id = ?'
+            tp.append(division_id)
+        tq, tp = apply_project_filter(conn, tq, tp, request.user, 'e')
+        total = db_fetchone(conn, tq, tp)['c']
+
+        # Distinct values for filter dropdowns
+        desig_rows = db_fetchall(conn, "SELECT DISTINCT designation FROM employees WHERE active = 1 AND designation IS NOT NULL AND designation != '' ORDER BY designation")
+        nat_rows = db_fetchall(conn, "SELECT DISTINCT nationality FROM employees WHERE active = 1 AND nationality IS NOT NULL AND nationality != '' ORDER BY nationality")
+    finally:
+        conn.close()
+
+    dates_map = {r['scan_date']: r['count'] for r in rows}
+    labels = []
+    values = []
+    d = start
+    while d <= end:
+        iso = d.isoformat()
+        labels.append(iso)
+        values.append(dates_map.get(iso, 0))
+        d += timedelta(days=1)
+
+    return jsonify({
+        'labels': labels, 'values': values, 'total': total,
+        'designations': [r['designation'] for r in desig_rows],
+        'nationalities': [r['nationality'] for r in nat_rows]
+    })
 
 
 # ============================================================

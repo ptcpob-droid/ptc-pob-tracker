@@ -65,11 +65,10 @@ function timeStr() {
     return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-const SESSION_LABELS = { AM: '9 AM', PM: '2 PM', EV: '6 PM' };
+const SESSION_LABELS = { AM: '9 AM', EV: '7 PM' };
 function sessionByHour() {
     const h = new Date().getHours();
-    if (h < 12) return 'AM';
-    if (h < 18) return 'PM';
+    if (h < 16) return 'AM';
     return 'EV';
 }
 function updateClock() {
@@ -105,6 +104,7 @@ function showApp() {
     const role = state.user.role;
     const admin = isAdminRole(role);
     $('#admin-tab').style.display = (role === 'admin' || role === 'executive') ? '' : 'none';
+    $('#trends-tab').style.display = isAdminRole(role) ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
     const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
     const qrTab = document.querySelector('.tab[data-tab="qrcodes"]');
@@ -545,7 +545,7 @@ function initSetup() {
             state.projectName = s.projectName;
             state.siteId = s.siteId;
             state.siteName = s.siteName;
-            state.session = (s.session && ['AM','PM','EV'].includes(s.session)) ? s.session : auto;
+            state.session = (s.session && ['AM','EV'].includes(s.session)) ? s.session : auto;
             $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === state.session));
             (async () => {
                 const projects = await api('/projects');
@@ -609,7 +609,7 @@ function initImportModal() {
         }
     });
 
-    $('#btn-open-import-excel')?.addEventListener('click', async () => {
+    document.getElementById('btn-open-import-excel')?.addEventListener('click', async () => {
         $('#import-modal').classList.remove('hidden');
         await loadImportExcelDivisionArea();
         $('#import-excel-file').focus?.();
@@ -903,25 +903,23 @@ async function loadDashboard() {
     if (dateEl) dateEl.textContent = dateLabel ? ` — ${dateLabel}` : '';
 
     const amP = stats.total_employees > 0 ? Math.round(((stats.today_am || 0) / stats.total_employees) * 100) : 0;
-    const pmP = stats.total_employees > 0 ? Math.round(((stats.today_pm || 0) / stats.total_employees) * 100) : 0;
     const evP = stats.total_employees > 0 ? Math.round(((stats.today_ev || 0) / stats.total_employees) * 100) : 0;
     $('#stats-cards').innerHTML = `
         <div class="stat-card"><div class="stat-value blue">${esc(String(stats.total_employees))}</div><div class="stat-label">Total Workforce</div></div>
         <div class="stat-card"><div class="stat-value green">${esc(String(stats.today_am ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${amP}%)</small></div><div class="stat-label">9 AM Present</div></div>
-        <div class="stat-card"><div class="stat-value purple">${esc(String(stats.today_pm ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${pmP}%)</small></div><div class="stat-label">2 PM Present</div></div>
-        <div class="stat-card"><div class="stat-value teal">${esc(String(stats.today_ev ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${evP}%)</small></div><div class="stat-label">6 PM Present</div></div>
+        <div class="stat-card"><div class="stat-value teal">${esc(String(stats.today_ev ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${evP}%)</small></div><div class="stat-label">7 PM Present</div></div>
         <div class="stat-card"><div class="stat-value orange">${esc(String(stats.total_projects))}</div><div class="stat-label">Projects</div></div>`;
 
     const tw = $('#headcount-table-wrap');
     if (!hc.sites || hc.sites.length === 0) {
         tw.innerHTML = `<div class="empty-state">No attendance data for ${dateLabel || headcountDate}</div>`;
     } else {
-        let h = `<div class="text-dim" style="font-size:0.85rem;margin-bottom:6px">Date: ${dateLabel || headcountDate}</div><table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>2 PM</th><th>6 PM</th><th>9 AM %</th></tr></thead><tbody>`;
+        let h = `<div class="text-dim" style="font-size:0.85rem;margin-bottom:6px">Date: ${dateLabel || headcountDate}</div><table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>7 PM</th><th>9 AM %</th></tr></thead><tbody>`;
         hc.sites.forEach(r => {
-            const am = r.AM ?? 0, pm = r.PM ?? 0, ev = r.EV ?? 0;
+            const am = r.AM ?? 0, ev = r.EV ?? 0;
             const pct = r.total_employees > 0 ? Math.round((am / r.total_employees) * 100) : 0;
             const c = pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--danger)';
-            h += `<tr><td>${esc(r.project)}</td><td>${esc(r.site)}</td><td>${r.total_employees}</td><td><strong>${am}</strong></td><td><strong>${pm}</strong></td><td><strong>${ev}</strong></td>
+            h += `<tr><td>${esc(r.project)}</td><td>${esc(r.site)}</td><td>${r.total_employees}</td><td><strong>${am}</strong></td><td><strong>${ev}</strong></td>
                 <td><div style="display:flex;align-items:center;gap:6px"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${c}"></div></div><span style="font-size:0.8rem">${pct}%</span></div></td></tr>`;
         });
         tw.innerHTML = h + '</tbody></table>';
@@ -1040,6 +1038,133 @@ async function loadPersonnel(view = 'present') {
 }
 
 // ============================================================
+// TRENDS (line chart)
+// ============================================================
+let _trendsInited = false;
+async function initTrends() {
+    if (_trendsInited) return;
+    _trendsInited = true;
+    const sess = $('#trend-session'), desig = $('#trend-designation'), nat = $('#trend-nationality'), days = $('#trend-days');
+    [sess, desig, nat, days].forEach(el => el?.addEventListener('change', loadTrends));
+    await loadTrends();
+}
+
+async function loadTrends() {
+    const params = new URLSearchParams();
+    const filterParams = getDashFilterParams();
+    if (filterParams) filterParams.split('&').forEach(p => { const [k,v] = p.split('='); params.set(k,v); });
+    const sess = $('#trend-session').value;
+    const desig = $('#trend-designation').value;
+    const nat = $('#trend-nationality').value;
+    const days = $('#trend-days').value;
+    if (sess) params.set('session', sess);
+    if (desig) params.set('designation', desig);
+    if (nat) params.set('nationality', nat);
+    params.set('days', days);
+
+    const data = await api('/trends?' + params.toString());
+    if (!data || !data.labels) return;
+
+    // Populate filter dropdowns (keep selection)
+    const prevD = desig, prevN = nat;
+    const dSel = $('#trend-designation'), nSel = $('#trend-nationality');
+    if (data.designations) {
+        const curVal = dSel.value;
+        dSel.innerHTML = '<option value="">All Designations</option>' + data.designations.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+        dSel.value = curVal;
+    }
+    if (data.nationalities) {
+        const curVal = nSel.value;
+        nSel.innerHTML = '<option value="">All Nationalities</option>' + data.nationalities.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+        nSel.value = curVal;
+    }
+
+    drawLineChart($('#trend-chart'), data.labels, data.values, data.total);
+
+    const bd = $('#trend-breakdown');
+    if (bd && data.labels.length) {
+        const recent = data.labels.slice(-7);
+        const recentV = data.values.slice(-7);
+        bd.innerHTML = `<table class="worker-table"><thead><tr><th>Date</th><th>Present</th><th>Total</th><th>%</th></tr></thead><tbody>` +
+            recent.map((d, i) => {
+                const pct = data.total > 0 ? Math.round((recentV[i] / data.total) * 100) : 0;
+                return `<tr><td>${formatHeadcountDate(d)}</td><td><strong>${recentV[i]}</strong></td><td>${data.total}</td><td>${pct}%</td></tr>`;
+            }).join('') + '</tbody></table>';
+    }
+}
+
+function drawLineChart(canvas, labels, values, total) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    if (!values.length) { ctx.fillStyle = '#94a3b8'; ctx.font = '14px Inter, sans-serif'; ctx.fillText('No data', w/2 - 25, h/2); return; }
+
+    const pad = { top: 30, right: 20, bottom: 40, left: 50 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+    const maxV = Math.max(...values, total || 1, 1);
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(148,163,184,0.15)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + ch - (ch * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxV * i / 4), pad.left - 6, y + 4);
+    }
+
+    // Total line (dashed)
+    if (total > 0) {
+        const ty = pad.top + ch - (ch * total / maxV);
+        ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(59,130,246,0.4)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, ty); ctx.lineTo(w - pad.right, ty); ctx.stroke();
+        ctx.setLineDash([]); ctx.fillStyle = '#3b82f6'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`Total: ${total}`, pad.left + 4, ty - 4);
+    }
+
+    // Line
+    const stepX = values.length > 1 ? cw / (values.length - 1) : cw;
+    ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    values.forEach((v, i) => {
+        const x = pad.left + i * stepX;
+        const y = pad.top + ch - (ch * v / maxV);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Fill area
+    const last = values.length - 1;
+    ctx.lineTo(pad.left + last * stepX, pad.top + ch);
+    ctx.lineTo(pad.left, pad.top + ch);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(34,197,94,0.1)'; ctx.fill();
+
+    // Dots
+    values.forEach((v, i) => {
+        const x = pad.left + i * stepX;
+        const y = pad.top + ch - (ch * v / maxV);
+        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#22c55e'; ctx.fill();
+    });
+
+    // X labels (show ~7 evenly spaced)
+    ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(labels.length / 7));
+    labels.forEach((l, i) => {
+        if (i % step === 0 || i === labels.length - 1) {
+            const x = pad.left + i * stepX;
+            const parts = l.split('-');
+            ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 16);
+        }
+    });
+}
+
+// ============================================================
 // QR CODES (separate tab for print view)
 // ============================================================
 async function loadQRCodesTab() {
@@ -1133,12 +1258,6 @@ async function loadAdmin() {
     const [divisions, projects] = await Promise.all([api('/divisions'), api('/projects')]);
     window._adminDivisions = Array.isArray(divisions) ? divisions : [];
     window._adminProjects = Array.isArray(projects) ? projects : [];
-    if (window._adminProjects.length) {
-        $('#projects-list').innerHTML = window._adminProjects.map(p => `<div class="scan-item"><div>
-            <div class="scan-item-name">${esc(p.division_name || '')} / ${esc(p.area_name || '')} / ${esc(p.name)}</div>
-            <div class="scan-item-sub">${p.employee_count ?? 0} employees</div>
-        </div></div>`).join('') || '<div class="empty-state">No projects</div>';
-    }
     const areaWrap = $('#new-user-areas');
     if (areaWrap && typeof fillNewUserAccess === 'function') fillNewUserAccess();
 
@@ -1313,16 +1432,16 @@ function initAdmin() {
         }
     });
 
-    $('#btn-add-project').addEventListener('click', async () => {
-        const name = $('#new-project-name').value.trim();
+    $('#btn-add-project')?.addEventListener('click', async () => {
+        const name = $('#new-project-name')?.value.trim();
         if (!name) return;
         const res = await api('/projects', { method: 'POST', body: JSON.stringify({ name }) });
         toast(res.success ? 'Project added' : (res.message || 'Failed'), res.success ? 'success' : 'error');
         if (res.success) { $('#new-project-name').value = ''; loadAdmin(); }
     });
 
-    $('#btn-open-import').addEventListener('click', () => $('#import-modal').classList.remove('hidden'));
-    $('#btn-reimport').addEventListener('click', async () => {
+    $('#btn-open-import')?.addEventListener('click', () => $('#import-modal')?.classList.remove('hidden'));
+    $('#btn-reimport')?.addEventListener('click', async () => {
         const res = await api('/import-roster', { method: 'POST' });
         toast(res.message || 'Done', res.success ? 'success' : 'error');
         loadAdmin();
@@ -1348,6 +1467,7 @@ function initTabs() {
                 refreshDashboard();
             }
             else if (target === 'qrcodes') { loadProjects($('#qr-project-filter'), true); loadQRCodesTab(); }
+            else if (target === 'trends') { initTrends(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });

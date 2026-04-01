@@ -139,8 +139,7 @@
                 <label>Session</label>
                 <div class="session-toggle">
                     <button class="btn-session active" data-session="AM">9 AM</button>
-                    <button class="btn-session" data-session="PM">2 PM</button>
-                    <button class="btn-session" data-session="EV">6 PM</button>
+                    <button class="btn-session" data-session="EV">7 PM</button>
                 </div>
             </div>
             <button id="setup-confirm" class="btn btn-primary btn-lg" disabled>Start Scanning</button>
@@ -199,6 +198,10 @@
             <button class="tab" data-tab="qrcodes">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-5v5"/></svg>
                 QR Codes
+            </button>
+            <button class="tab" data-tab="trends" id="trends-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                Trends
             </button>
             <button class="tab" data-tab="admin" id="admin-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
@@ -305,8 +308,7 @@
                     <span id="personnel-date-label" class="text-dim" style="font-size:0.85rem;font-weight:normal"></span>
                     <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session for Present/Missing">
                         <option value="AM">9 AM</option>
-                        <option value="PM">2 PM</option>
-                        <option value="EV">6 PM</option>
+                        <option value="EV">7 PM</option>
                     </select>
                     <div class="toggle-group">
                         <button class="btn-toggle active" data-view="present">Present</button>
@@ -328,52 +330,56 @@
             <div id="qr-grid-tab" class="qr-grid"></div>
         </div>
 
+        <!-- Trends Tab -->
+        <div id="tab-trends" class="tab-content">
+            <div class="dash-filter-bar">
+                <select id="trend-session" class="input" style="max-width:130px">
+                    <option value="AM">9 AM</option>
+                    <option value="EV">7 PM</option>
+                </select>
+                <select id="trend-designation" class="input"><option value="">All Designations</option></select>
+                <select id="trend-nationality" class="input"><option value="">All Nationalities</option></select>
+                <select id="trend-days" class="input" style="max-width:130px">
+                    <option value="7">Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                </select>
+            </div>
+            <div class="section">
+                <h3 style="margin-bottom:12px">Attendance Trend</h3>
+                <canvas id="trend-chart" height="280" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
+            </div>
+            <div class="section">
+                <h3 style="margin-bottom:12px">Breakdown</h3>
+                <div id="trend-breakdown" class="table-wrap"></div>
+            </div>
+        </div>
+
         <!-- Admin Tab (admin only) -->
         <div id="tab-admin" class="tab-content">
             <div class="settings-section">
-                <h3>Users &amp; Supervisors</h3>
+                <h3>Manage Users</h3>
+                <p class="form-hint" style="margin-bottom:12px">Add scanners (PIN login) or admin/focal point users (2FA login).</p>
                 <div id="users-list"></div>
-                <div class="settings-item" style="margin-top:12px;flex-wrap:wrap;gap:6px">
-                    <input type="text" id="new-username" class="input" placeholder="Username" style="flex:1;min-width:100px">
-                    <input type="text" id="new-displayname" class="input" placeholder="Name (required)" style="flex:1;min-width:100px" title="Scanner name is recorded on each scan">
-                    <input type="email" id="new-useremail" class="input" placeholder="Email (required for Contractor Scanner / Divisional Focal Point)" style="flex:1;min-width:140px">
-                    <input type="text" id="new-userdesignation" class="input" placeholder="Designation (required for Contractor Scanner / Divisional Focal Point)" style="flex:1;min-width:120px">
-                    <input type="text" id="new-userpin" class="input" placeholder="PIN (for scanners)" style="flex:0.6;min-width:80px" inputmode="numeric">
-                    <select id="new-userrole" class="input" style="flex:0.6;min-width:120px">
-                        <option value="scanner">Contractor Scanner</option>
-                        <option value="focal_point">Divisional Focal Point</option>
-                        <option value="manager">HSE Manager</option>
-                        <option value="admin">Admin</option>
-                        <option value="executive">Executive</option>
-                    </select>
-                    <button id="btn-add-user" class="btn btn-sm btn-primary">Add User</button>
-                </div>
-                <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
-                <p class="form-hint">Contractor Scanner: signs in with username + PIN; assign projects. Divisional Focal Point / HSE Manager / Executive: signs in with username + 2FA.</p>
-            </div>
-            <div class="settings-section">
-                <h3>Divisions &amp; Projects</h3>
-                <div id="projects-list"></div>
-                <p class="form-hint">Division → Area → Project. Assign divisions to Divisional Focal Point or projects to Contractor Scanner.</p>
-                <div class="settings-item" style="margin-top:12px">
-                    <input type="text" id="new-project-name" class="input" placeholder="New area name (optional)">
-                    <button id="btn-add-project" class="btn btn-sm btn-primary">Add</button>
-                </div>
-            </div>
-            <div class="settings-section">
-                <h3>Import Roster</h3>
-                <div class="settings-item">
-                    <div><strong>Upload CSV</strong><p>Same headers for any project</p></div>
-                    <button id="btn-open-import" class="btn btn-sm btn-primary">Import CSV</button>
-                </div>
-                <div class="settings-item">
-                    <div><strong>Import Excel (4 NEB sheets)</strong><p>One project per sheet; unique QR per person</p></div>
-                    <button id="btn-open-import-excel" class="btn btn-sm btn-primary">Import Excel</button>
-                </div>
-                <div class="settings-item">
-                    <div><strong>Re-import Default</strong><p>Re-import default roster CSV</p></div>
-                    <button id="btn-reimport" class="btn btn-sm btn-outline">Re-import</button>
-                </div>
+                <details style="margin-top:12px">
+                    <summary style="cursor:pointer;color:var(--primary);font-weight:600;margin-bottom:8px">+ Add New User</summary>
+                    <div class="settings-item" style="flex-wrap:wrap;gap:6px;margin-top:8px">
+                        <input type="text" id="new-username" class="input" placeholder="Username" style="flex:1;min-width:100px">
+                        <input type="text" id="new-displayname" class="input" placeholder="Full Name" style="flex:1;min-width:100px">
+                        <input type="email" id="new-useremail" class="input" placeholder="Email" style="flex:1;min-width:140px">
+                        <input type="text" id="new-userdesignation" class="input" placeholder="Designation" style="flex:1;min-width:120px">
+                        <input type="text" id="new-userpin" class="input" placeholder="PIN (scanners)" style="flex:0.5;min-width:70px" inputmode="numeric">
+                        <select id="new-userrole" class="input" style="flex:0.6;min-width:120px">
+                            <option value="scanner">Contractor Scanner</option>
+                            <option value="focal_point">Divisional Focal Point</option>
+                            <option value="manager">HSE Manager</option>
+                            <option value="admin">Admin</option>
+                            <option value="executive">Executive</option>
+                        </select>
+                        <button id="btn-add-user" class="btn btn-sm btn-primary">Add</button>
+                    </div>
+                    <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+                </details>
             </div>
             <div class="settings-section">
                 <h3>My 2FA</h3>
