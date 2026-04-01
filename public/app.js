@@ -416,9 +416,12 @@ async function loadProjects(selectEl, includeAll = false, areaId = null, divisio
     projects.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.id;
-        const label = p.division_name ? `${p.division_name} / ${p.area_name || ''} / ${p.name}` : p.name;
-        opt.textContent = `${label} (${p.employee_count ?? 0} workers)`;
+        let label = p.name;
+        if (p.contractor_company) label += ` — ${p.contractor_company}`;
+        if (p.employee_count) label += ` (${p.employee_count})`;
+        opt.textContent = label;
         opt.dataset.name = p.name;
+        opt.dataset.contractor = p.contractor_company || '';
         selectEl.appendChild(opt);
     });
     selectEl.disabled = false;

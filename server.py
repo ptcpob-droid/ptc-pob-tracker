@@ -45,9 +45,9 @@ ROLE_HIERARCHY = {
 # 4 divisions; each has areas; each area has projects; headcount per project
 DIVISIONS = [
     ('P&C BAB/NEB', ['BAB', 'NEB', 'BAB MP']),
-    ('P&C GTG', ['FUJ', 'GAS (ASAB)', 'GAS (BAB)', 'IPS', 'JD', 'MPS']),
-    ('P&C SE', ['SHAH', 'QW', 'MN']),
-    ('P&C BUHASA', ['BUHASA', 'BUHASA MP']),
+    ('P&C GTG', ['GAS', 'TPO', 'GAS/TPO', 'WEP', 'FUJ', 'GAS (ASAB)', 'GAS (BAB)', 'IPS', 'JD', 'MPS']),
+    ('P&C SE', ['Asab/Sahil', 'SQM', 'SHAH', 'QW', 'MN']),
+    ('P&C BUHASA', ['Buhasa', 'BUIFDP (Buhasa)', 'BUHASA MP']),
 ]
 
 AREA_ALIASES = {
@@ -222,6 +222,8 @@ def init_db():
                 name TEXT NOT NULL,
                 description TEXT,
                 agreement_no TEXT,
+                contract_number TEXT,
+                contractor_company TEXT,
                 active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(area_id, name)
@@ -351,6 +353,8 @@ def init_db():
         for alter in [
             'ALTER TABLE projects ADD COLUMN region TEXT',
             'ALTER TABLE projects ADD COLUMN area_id INTEGER REFERENCES areas(id)',
+            'ALTER TABLE projects ADD COLUMN contract_number TEXT',
+            'ALTER TABLE projects ADD COLUMN contractor_company TEXT',
             'ALTER TABLE users ADD COLUMN email TEXT',
             'ALTER TABLE users ADD COLUMN designation TEXT',
             'ALTER TABLE attendance ADD COLUMN scanner_email TEXT',
@@ -413,6 +417,47 @@ def init_db():
                     conn.commit()
         except Exception:
             conn.rollback()
+
+        # Seed projects from contractors CSV (if available)
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'contractors.csv')
+        if os.path.exists(csv_path):
+            import csv
+            try:
+                with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        proj_name = (row.get('Project Name') or '').strip()
+                        contract_no = (row.get('Contract Number') or '').strip()
+                        div_name = (row.get('Division') or '').strip()
+                        area_name = (row.get('Area') or '').strip()
+                        contractor = (row.get('Name of Contractors') or '').strip()
+                        if not proj_name or not div_name or not area_name:
+                            continue
+                        div_row = db_fetchone(conn, 'SELECT id FROM divisions WHERE name = ?', (div_name,))
+                        if not div_row:
+                            continue
+                        div_id = div_row['id'] if isinstance(div_row, dict) else div_row[0]
+                        ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
+                        if not ar:
+                            continue
+                        area_id = ar['id'] if isinstance(ar, dict) else ar[0]
+                        existing = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, proj_name))
+                        if existing:
+                            pid = existing['id'] if isinstance(existing, dict) else existing[0]
+                            db_execute(conn, 'UPDATE projects SET contract_number = ?, contractor_company = ? WHERE id = ?',
+                                       (contract_no, contractor, pid))
+                        else:
+                            try:
+                                db_execute(conn, '''INSERT INTO projects (area_id, name, contract_number, contractor_company, active)
+                                    VALUES (?, ?, ?, ?, 1)''', (area_id, proj_name, contract_no, contractor))
+                            except Exception:
+                                conn.rollback()
+                                continue
+                        conn.commit()
+                print(f'  Seeded projects from contractors CSV')
+            except Exception as e:
+                print(f'  CSV seed warning: {e}')
+                conn.rollback()
 
         user = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
         count = user['c'] if isinstance(user, dict) else user[0]
@@ -1217,7 +1262,8 @@ def api_projects():
     division_id = request.args.get('division_id', type=int)
     conn = get_db()
     try:
-        query = '''SELECT p.id, p.area_id, p.name, p.description, p.agreement_no, p.active,
+        query = '''SELECT p.id, p.area_id, p.name, p.description, p.agreement_no,
+            p.contract_number, p.contractor_company, p.active,
             a.name as area_name, a.division_id, d.name as division_name,
             COUNT(DISTINCT e.id) as employee_count, COUNT(DISTINCT s.id) as site_count
             FROM projects p
@@ -1241,7 +1287,7 @@ def api_projects():
                 placeholders = ','.join(['?' for _ in allowed])
                 query += f' AND p.id IN ({placeholders})'
                 params.extend(allowed)
-        query += ' GROUP BY p.id, p.area_id, p.name, a.id, a.name, a.division_id, d.id, d.name ORDER BY COALESCE(d.name, \'\'), COALESCE(a.name, \'\'), p.name'
+        query += " GROUP BY p.id, p.area_id, p.name, p.contract_number, p.contractor_company, a.id, a.name, a.division_id, d.id, d.name ORDER BY COALESCE(d.name, ''), COALESCE(a.name, ''), p.name"
         rows = db_fetchall(conn, query, params)
     finally:
         conn.close()
@@ -1375,32 +1421,50 @@ def api_import_excel():
 @app.route('/api/contractors')
 @require_auth
 def api_contractors():
-    """Return distinct subcontractor/company names for filtering."""
+    """Return distinct contractor company names (from projects + employee subcontractor)."""
     project_id = request.args.get('project_id', '')
     area_id = request.args.get('area_id', type=int)
     division_id = request.args.get('division_id', type=int)
     conn = get_db()
     try:
-        query = '''SELECT DISTINCT e.subcontractor FROM employees e
+        names = set()
+        # From projects table
+        pq = '''SELECT DISTINCT p.contractor_company FROM projects p
+            LEFT JOIN areas a ON a.id = p.area_id
+            WHERE p.active = 1 AND p.contractor_company IS NOT NULL AND p.contractor_company != '' '''
+        pp = []
+        if project_id:
+            pq += ' AND p.id = ?'
+            pp.append(project_id)
+        if area_id:
+            pq += ' AND p.area_id = ?'
+            pp.append(area_id)
+        if division_id:
+            pq += ' AND a.division_id = ?'
+            pp.append(division_id)
+        for r in db_fetchall(conn, pq, pp):
+            names.add(r['contractor_company'])
+        # From employees subcontractor field
+        eq = '''SELECT DISTINCT e.subcontractor FROM employees e
             LEFT JOIN projects p ON p.id = e.project_id
             LEFT JOIN areas a ON a.id = p.area_id
             WHERE e.active = 1 AND e.subcontractor IS NOT NULL AND e.subcontractor != '' '''
-        params = []
+        ep = []
         if project_id:
-            query += ' AND e.project_id = ?'
-            params.append(project_id)
+            eq += ' AND e.project_id = ?'
+            ep.append(project_id)
         if area_id:
-            query += ' AND p.area_id = ?'
-            params.append(area_id)
+            eq += ' AND p.area_id = ?'
+            ep.append(area_id)
         if division_id:
-            query += ' AND a.division_id = ?'
-            params.append(division_id)
-        query, params = apply_project_filter(conn, query, params, request.user, 'e')
-        query += ' ORDER BY e.subcontractor'
-        rows = db_fetchall(conn, query, params)
+            eq += ' AND a.division_id = ?'
+            ep.append(division_id)
+        eq, ep = apply_project_filter(conn, eq, ep, request.user, 'e')
+        for r in db_fetchall(conn, eq, ep):
+            names.add(r['subcontractor'])
     finally:
         conn.close()
-    return jsonify([r['subcontractor'] for r in rows])
+    return jsonify(sorted(names))
 
 
 @app.route('/api/employees')
