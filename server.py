@@ -1372,6 +1372,37 @@ def api_import_excel():
 # EMPLOYEES / SCAN / HEADCOUNT (project-scoped)
 # ============================================================
 
+@app.route('/api/contractors')
+@require_auth
+def api_contractors():
+    """Return distinct subcontractor/company names for filtering."""
+    project_id = request.args.get('project_id', '')
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
+    conn = get_db()
+    try:
+        query = '''SELECT DISTINCT e.subcontractor FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas a ON a.id = p.area_id
+            WHERE e.active = 1 AND e.subcontractor IS NOT NULL AND e.subcontractor != '' '''
+        params = []
+        if project_id:
+            query += ' AND e.project_id = ?'
+            params.append(project_id)
+        if area_id:
+            query += ' AND p.area_id = ?'
+            params.append(area_id)
+        if division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
+        query, params = apply_project_filter(conn, query, params, request.user, 'e')
+        query += ' ORDER BY e.subcontractor'
+        rows = db_fetchall(conn, query, params)
+    finally:
+        conn.close()
+    return jsonify([r['subcontractor'] for r in rows])
+
+
 @app.route('/api/employees')
 @require_auth
 def api_employees():
@@ -1401,6 +1432,10 @@ def api_employees():
         if division_id:
             query += ' AND a.division_id = ?'
             params.append(division_id)
+        subcontractor = request.args.get('subcontractor', '').strip()
+        if subcontractor:
+            query += ' AND e.subcontractor = ?'
+            params.append(subcontractor)
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
         if search:
             escaped = search.replace('%', r'\%').replace('_', r'\_')
@@ -2057,8 +2092,14 @@ def import_excel(xlsx_path, area_id=None):
     try:
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            raw = sheet_name.strip()
-            project_name = f"{area_label} - {raw}" if area_label else raw
+            # Read project name from cell C3; fall back to sheet name
+            c3_val = None
+            try:
+                c3_val = ws['C3'].value
+            except Exception:
+                pass
+            raw = str(c3_val).strip() if c3_val else sheet_name.strip()
+            project_name = raw
 
             # Use provided area_id for new projects
             existing = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, project_name))

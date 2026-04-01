@@ -829,7 +829,7 @@ function playSound(type) {
 let _dashWorkers = [];
 
 async function initDashFilters() {
-    const dd = $('#dash-division'), da = $('#dash-area'), dp = $('#dash-project'), ds = $('#dash-site');
+    const dd = $('#dash-division'), da = $('#dash-area'), dp = $('#dash-project'), dc = $('#dash-contractor');
     const divs = await api('/divisions');
     if (Array.isArray(divs)) {
         dd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
@@ -837,7 +837,7 @@ async function initDashFilters() {
     dd.addEventListener('change', async () => {
         da.innerHTML = '<option value="">All Areas</option>';
         dp.innerHTML = '<option value="">All Projects</option>';
-        ds.innerHTML = '<option value="">All Sites</option>';
+        if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
         if (dd.value) {
             const areas = await api(`/areas?division_id=${dd.value}`);
             if (Array.isArray(areas)) da.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
@@ -846,16 +846,15 @@ async function initDashFilters() {
     });
     da.addEventListener('change', async () => {
         dp.innerHTML = '<option value="">All Projects</option>';
-        ds.innerHTML = '<option value="">All Sites</option>';
+        if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
         if (da.value) await loadProjects(dp, true, da.value, null);
         refreshDashboard();
     });
     dp.addEventListener('change', async () => {
-        ds.innerHTML = '<option value="">All Sites</option>';
-        if (dp.value) await loadSitesForProject(ds, dp.value);
+        await loadContractors();
         refreshDashboard();
     });
-    ds.addEventListener('change', refreshDashboard);
+    if (dc) dc.addEventListener('change', refreshDashboard);
 
     $('#dash-import-btn').addEventListener('click', async () => {
         const file = $('#dash-import-file')?.files?.[0];
@@ -884,10 +883,11 @@ function refreshDashboard() {
     loadWorkerList();
     loadDashQRCodes();
     loadPersonnel('present');
+    loadContractors();
 }
 
 async function loadDashboard() {
-    const d = $('#dash-date'), p = $('#dash-project'), s = $('#dash-site');
+    const d = $('#dash-date'), p = $('#dash-project');
     if (!d.value) d.value = new Date().toISOString().split('T')[0];
 
     const filterParams = getDashFilterParams();
@@ -931,12 +931,25 @@ function getDashFilterParams() {
     const div = $('#dash-division')?.value;
     const area = $('#dash-area')?.value;
     const proj = $('#dash-project')?.value;
-    const site = $('#dash-site')?.value;
+    const contractor = $('#dash-contractor')?.value;
     if (proj) parts.push(`project_id=${proj}`);
     else if (area) parts.push(`area_id=${area}`);
     else if (div) parts.push(`division_id=${div}`);
-    if (site) parts.push(`site_id=${site}`);
+    if (contractor) parts.push(`subcontractor=${encodeURIComponent(contractor)}`);
     return parts.join('&');
+}
+
+async function loadContractors() {
+    const dc = $('#dash-contractor');
+    if (!dc) return;
+    const params = getDashFilterParams();
+    const data = await api('/contractors' + (params ? '?' + params : ''));
+    const cur = dc.value;
+    dc.innerHTML = '<option value="">All Contractors</option>';
+    if (Array.isArray(data)) {
+        dc.innerHTML += data.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    }
+    dc.value = cur;
 }
 
 async function loadWorkerList() {
@@ -957,13 +970,21 @@ function renderWorkerTable(data) {
     if (label) label.textContent = `${data.length} worker${data.length !== 1 ? 's' : ''}`;
     if (!data.length) { wrap.innerHTML = '<div class="empty-state">No workers found</div>'; return; }
     wrap.innerHTML = `<table class="worker-table"><thead><tr>
-        <th>#</th><th>Name</th><th>Employee No.</th><th>Designation</th><th>Discipline</th>
-        <th>Nationality</th><th>Project</th><th>QR</th></tr></thead><tbody>` +
-        data.slice(0, 500).map((w, i) => `<tr>
-        <td>${i + 1}</td><td>${esc(w.name)}</td><td>${esc(w.employee_no)}</td>
-        <td>${esc(w.designation || '')}</td><td>${esc(w.discipline || '')}</td>
-        <td>${esc(w.nationality || '')}</td><td>${esc(w.project_name || '')}</td>
-        <td><button class="btn-qr-dl" data-empno="${esc(w.employee_no)}" data-pid="${w.project_id}" data-name="${esc(w.name)}">Download QR</button></td>
+        <th>Agreement No.</th><th>Project</th><th>Name</th><th>Nationality</th><th>DOB</th>
+        <th>Designation</th><th>Physical Work Location</th><th>Residing Camp</th>
+        <th>Employee No.</th><th>Qualification</th><th>Date of Joining</th>
+        <th>Date of Deployment</th><th>Medical Date</th><th>Discipline</th>
+        <th>Sub-contractor</th><th>Remarks</th><th>QR</th></tr></thead><tbody>` +
+        data.slice(0, 500).map((w) => `<tr>
+        <td>${esc(w.agreement_no || '')}</td><td>${esc(w.project_name || '')}</td>
+        <td>${esc(w.name)}</td><td>${esc(w.nationality || '')}</td><td>${esc(w.dob || '')}</td>
+        <td>${esc(w.designation || '')}</td><td>${esc(w.work_location || '')}</td>
+        <td>${esc(w.camp_name || '')}</td><td>${esc(w.employee_no)}</td>
+        <td>${esc(w.qualification || '')}</td><td>${esc(w.date_joining || '')}</td>
+        <td>${esc(w.date_deployment || '')}</td><td>${esc(w.medical_date || '')}</td>
+        <td>${esc(w.discipline || '')}</td><td>${esc(w.subcontractor || '')}</td>
+        <td>${esc(w.remarks || '')}</td>
+        <td><button class="btn-qr-dl" data-empno="${esc(w.employee_no)}" data-pid="${w.project_id}" data-name="${esc(w.name)}">QR</button></td>
         </tr>`).join('') + '</tbody></table>';
 
     wrap.onclick = async (e) => {
@@ -1603,7 +1624,6 @@ function initTabs() {
             const { token: dlToken } = await api('/export/download-token', { method: 'POST' });
             let url = `/api/export/attendance?date=${d}&dl_token=${dlToken}`;
             if ($('#dash-project').value) url += `&project_id=${$('#dash-project').value}`;
-            if ($('#dash-site').value) url += `&site_id=${$('#dash-site').value}`;
             window.open(url, '_blank');
         } catch (e) {
             toast('Export failed', 'error');

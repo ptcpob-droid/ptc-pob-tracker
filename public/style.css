@@ -343,9 +343,9 @@ select.input { cursor: pointer; }
 }
 .dash-upload-row .form-group { margin-bottom: 0; }
 
-.worker-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.worker-table th, .worker-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-.worker-table th { background: var(--bg-input); position: sticky; top: 0; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); }
+.worker-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.worker-table th, .worker-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.worker-table th { background: var(--bg-input); position: sticky; top: 0; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; color: var(--text-dim); }
 .worker-table tr:hover { background: rgba(255,255,255,0.03); }
 .btn-qr-dl { background: none; border: 1px solid var(--primary); color: var(--primary); padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
 .btn-qr-dl:hover { background: var(--primary); color: #fff; }
