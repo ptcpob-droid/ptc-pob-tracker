@@ -245,20 +245,13 @@
                 <input type="date" id="dash-date" class="input" style="max-width:160px">
             </div>
 
-            <!-- Excel Upload Section -->
+            <!-- Excel Upload Section (uses filter bar division/area) -->
             <div class="section dash-upload-section">
                 <div class="section-header">
                     <h3>Import Manpower Data</h3>
+                    <span class="text-dim" style="font-size:0.85rem">Into selected area above</span>
                 </div>
                 <div class="dash-upload-row">
-                    <div class="form-group" style="flex:1;min-width:140px">
-                        <label>Division</label>
-                        <select id="dash-import-division" class="input"><option value="">-- Select --</option></select>
-                    </div>
-                    <div class="form-group" style="flex:1;min-width:140px">
-                        <label>Area</label>
-                        <select id="dash-import-area" class="input" disabled><option value="">Select division</option></select>
-                    </div>
                     <div class="form-group" style="flex:1.5;min-width:180px">
                         <label>Excel (.xlsx)</label>
                         <input type="file" id="dash-import-file" class="input" accept=".xlsx" style="padding:6px">

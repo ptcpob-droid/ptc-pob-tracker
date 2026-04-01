@@ -368,27 +368,7 @@ def init_db():
                     conn.commit()
                     ar = db_fetchone(conn, 'SELECT id FROM areas WHERE division_id = ? AND name = ?', (div_id, area_name))
                 area_id = ar['id'] if isinstance(ar, dict) else ar[0]
-                # One default project per area (for pilot; more projects added via Excel)
-                proj = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, area_name))
-                if not proj:
-                    # Also check by name alone (legacy data may lack area_id)
-                    proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
-                    if proj:
-                        db_execute(conn, 'UPDATE projects SET area_id = ? WHERE id = ?', (area_id, proj['id'] if isinstance(proj, dict) else proj[0]))
-                        conn.commit()
-                    else:
-                        try:
-                            db_execute(conn, 'INSERT INTO projects (area_id, name, active) VALUES (?, ?, 1)', (area_id, area_name))
-                            conn.commit()
-                        except Exception:
-                            conn.rollback()
-                        proj = db_fetchone(conn, 'SELECT id FROM projects WHERE name = ?', (area_name,))
-                if proj:
-                    pid = proj['id'] if isinstance(proj, dict) else proj[0]
-                    site = db_fetchone(conn, 'SELECT id FROM sites WHERE project_id = ?', (pid,))
-                    if not site:
-                        db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (area_name, pid))
-                        conn.commit()
+                # No dummy projects — real projects come from Excel import only
         # Backfill area_id for existing projects that have region set (legacy)
         try:
             for div_name, area_names in DIVISIONS:
@@ -1256,23 +1236,36 @@ def api_employees():
     try:
         search = request.args.get('search', '')
         project_id = request.args.get('project_id', '')
+        area_id = request.args.get('area_id', type=int)
+        division_id = request.args.get('division_id', type=int)
         page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('per_page', 50))
+        per_page = int(request.args.get('per_page', 500))
         offset = (page - 1) * per_page
 
-        query = 'SELECT * FROM employees e WHERE e.active = 1'
+        query = '''SELECT e.*, p.name as project_name, a.name as area_name, d.name as division_name
+            FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas a ON a.id = p.area_id
+            LEFT JOIN divisions d ON d.id = a.division_id
+            WHERE e.active = 1'''
         params = []
         if project_id:
             query += ' AND e.project_id = ?'
             params.append(project_id)
+        if area_id:
+            query += ' AND p.area_id = ?'
+            params.append(area_id)
+        if division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
         if search:
             escaped = search.replace('%', r'\%').replace('_', r'\_')
             query += " AND (e.name LIKE ? ESCAPE '\\' OR e.employee_no LIKE ? ESCAPE '\\')"
             params.extend([f'%{escaped}%', f'%{escaped}%'])
 
-        cq = query.replace('SELECT *', 'SELECT COUNT(*) as total_count')
-        total_row = db_fetchone(conn, cq, params)
+        count_query = query.replace('SELECT e.*, p.name as project_name, a.name as area_name, d.name as division_name', 'SELECT COUNT(*) as total_count', 1)
+        total_row = db_fetchone(conn, count_query, params)
         total = total_row.get('total_count', 0) if total_row else 0
 
         query += ' ORDER BY e.name LIMIT ? OFFSET ?'
@@ -1280,7 +1273,7 @@ def api_employees():
         rows = db_fetchall(conn, query, params)
     finally:
         conn.close()
-    return jsonify({'employees': rows, 'total': total, 'page': page, 'pages': max(1, (total + per_page - 1) // per_page)})
+    return jsonify(rows)
 
 
 @app.route('/api/scan', methods=['POST'])
@@ -1447,23 +1440,43 @@ def api_missing():
 @require_auth
 def api_stats():
     project_id = request.args.get('project_id')
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
     conn = get_db()
     try:
         today = date.today().isoformat()
 
-        eq = 'SELECT COUNT(*) as c FROM employees e WHERE e.active = 1'
+        eq = '''SELECT COUNT(*) as c FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            WHERE e.active = 1'''
         ep = []
         if project_id:
             eq += ' AND e.project_id = ?'
             ep.append(project_id)
+        if area_id:
+            eq += ' AND p.area_id = ?'
+            ep.append(area_id)
+        if division_id:
+            eq += ' AND ar.division_id = ?'
+            ep.append(division_id)
         eq, ep = apply_project_filter(conn, eq, ep, request.user, 'e')
 
         def count_session(session_name):
-            q = "SELECT COUNT(DISTINCT employee_no) as c FROM attendance a WHERE a.scan_date = ? AND a.session = ?"
+            q = '''SELECT COUNT(DISTINCT a.employee_no) as c FROM attendance a
+                LEFT JOIN projects p ON p.id = a.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE a.scan_date = ? AND a.session = ?'''
             params = [today, session_name]
             if project_id:
                 q += ' AND a.project_id = ?'
                 params.append(project_id)
+            if area_id:
+                q += ' AND p.area_id = ?'
+                params.append(area_id)
+            if division_id:
+                q += ' AND ar.division_id = ?'
+                params.append(division_id)
             q, params = apply_project_filter(conn, q, params, request.user)
             return db_fetchone(conn, q, params)['c']
 
@@ -1487,12 +1500,23 @@ def api_qrcodes_batch():
     conn = get_db()
     try:
         project_id = request.args.get('project_id', '')
+        area_id = request.args.get('area_id', type=int)
+        division_id = request.args.get('division_id', type=int)
         query = '''SELECT e.project_id, e.employee_no, e.name, e.designation, e.discipline, e.work_location, p.name as project_name
-            FROM employees e JOIN projects p ON p.id = e.project_id WHERE e.active = 1'''
+            FROM employees e
+            JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas a ON a.id = p.area_id
+            WHERE e.active = 1'''
         params = []
         if project_id:
             query += ' AND e.project_id = ?'
             params.append(project_id)
+        if area_id:
+            query += ' AND p.area_id = ?'
+            params.append(area_id)
+        if division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
         query += ' ORDER BY e.name'
         employees = db_fetchall(conn, query, params)
@@ -1767,12 +1791,7 @@ def _col_index(header_row, *names):
     return -1
 
 
-SHEET_TO_PROJECT = {
-    'NEB-Galfar': 'NEB - Galfar',
-    'NEB_Robtstone': 'NEB - Robtstone',
-    'NEB PETROJET': 'NEB - Petrojet',
-    'NEB BSS TECH': 'NEB - BSS Tech',
-}
+SHEET_TO_PROJECT = {}
 
 def _cell_str(row, idx):
     if idx < 0 or idx >= len(row) or row[idx] is None:
@@ -1799,10 +1818,14 @@ def import_excel(xlsx_path, area_id=None):
     conn = get_db()
     total = 0
     messages = []
+    # Resolve area name for project naming
+    area_row = db_fetchone(conn, 'SELECT name FROM areas WHERE id = ?', (area_id,))
+    area_label = (area_row['name'] if isinstance(area_row, dict) else area_row[0]) if area_row else ''
     try:
-        for sheet_name in wb.sheetnames[:4]:
+        for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            project_name = SHEET_TO_PROJECT.get(sheet_name.strip(), f"NEB - {sheet_name.strip()}")
+            raw = sheet_name.strip()
+            project_name = f"{area_label} - {raw}" if area_label else raw
 
             # Use provided area_id for new projects
             existing = db_fetchone(conn, 'SELECT id FROM projects WHERE area_id = ? AND name = ?', (area_id, project_name))

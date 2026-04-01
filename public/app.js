@@ -115,17 +115,11 @@ function showApp() {
         if (qrTab) qrTab.style.display = 'none';
         $('#setup-overlay').classList.remove('hidden');
     } else {
-        if (scannerTab) scannerTab.style.display = (role === 'focal_point') ? 'none' : '';
+        if (scannerTab) scannerTab.style.display = 'none';
         if (dashTab) dashTab.style.display = '';
-        if (qrTab) qrTab.style.display = '';
-        if (admin) {
-            $('#main-content').style.display = 'block';
-            if (dashTab) {
-                dashTab.click();
-            }
-        } else {
-            $('#setup-overlay').classList.remove('hidden');
-        }
+        if (qrTab) qrTab.style.display = 'none';
+        $('#main-content').style.display = 'block';
+        if (dashTab) dashTab.click();
     }
 }
 
@@ -863,21 +857,11 @@ async function initDashFilters() {
     });
     ds.addEventListener('change', refreshDashboard);
 
-    const did = $('#dash-import-division'), dia = $('#dash-import-area');
-    const idivs = await api('/divisions');
-    if (Array.isArray(idivs)) did.innerHTML = '<option value="">-- Select --</option>' + idivs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-    did.addEventListener('change', async () => {
-        dia.disabled = true; dia.innerHTML = '<option value="">Loading...</option>';
-        if (!did.value) { dia.innerHTML = '<option value="">Select division</option>'; return; }
-        const areas = await api(`/areas?division_id=${did.value}`);
-        dia.innerHTML = '<option value="">-- Select --</option>' + (Array.isArray(areas) ? areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') : '');
-        dia.disabled = false;
-    });
     $('#dash-import-btn').addEventListener('click', async () => {
         const file = $('#dash-import-file')?.files?.[0];
         if (!file) return toast('Select an Excel file', 'error');
-        const areaId = dia.value;
-        if (!areaId) return toast('Select a division and area', 'error');
+        const areaId = $('#dash-area').value;
+        if (!areaId) return toast('Select a Division and Area in the filter bar above first', 'error');
         const status = $('#dash-import-status');
         status.textContent = 'Importing...';
         const form = new FormData();
@@ -906,11 +890,9 @@ async function loadDashboard() {
     const d = $('#dash-date'), p = $('#dash-project'), s = $('#dash-site');
     if (!d.value) d.value = new Date().toISOString().split('T')[0];
 
-    let url = `/headcount?date=${d.value}`;
-    if (p.value) url += `&project_id=${p.value}`;
-    if (s.value) url += `&site_id=${s.value}`;
-    let su = '/stats';
-    if (p.value) su += `?project_id=${p.value}`;
+    const filterParams = getDashFilterParams();
+    let url = `/headcount?date=${d.value}` + (filterParams ? '&' + filterParams : '');
+    let su = '/stats' + (filterParams ? '?' + filterParams : '');
 
     const [hc, stats] = await Promise.all([api(url), api(su)]);
     if (!stats.total_employees && stats.total_employees !== 0) return;
@@ -946,13 +928,25 @@ async function loadDashboard() {
     }
 }
 
+function getDashFilterParams() {
+    const parts = [];
+    const div = $('#dash-division')?.value;
+    const area = $('#dash-area')?.value;
+    const proj = $('#dash-project')?.value;
+    const site = $('#dash-site')?.value;
+    if (proj) parts.push(`project_id=${proj}`);
+    else if (area) parts.push(`area_id=${area}`);
+    else if (div) parts.push(`division_id=${div}`);
+    if (site) parts.push(`site_id=${site}`);
+    return parts.join('&');
+}
+
 async function loadWorkerList() {
     const wrap = $('#worker-list');
     if (!wrap) return;
     wrap.innerHTML = '<div class="spinner"></div>';
-    const p = $('#dash-project').value;
-    let url = '/employees';
-    if (p) url += `?project_id=${p}`;
+    const params = getDashFilterParams();
+    let url = '/employees' + (params ? '?' + params : '');
     const data = await api(url);
     if (!Array.isArray(data)) { wrap.innerHTML = '<div class="empty-state">No workers</div>'; _dashWorkers = []; return; }
     _dashWorkers = data;
@@ -996,9 +990,9 @@ async function loadDashQRCodes() {
     const grid = $('#qr-grid');
     if (!grid) return;
     grid.innerHTML = '<div class="spinner"></div>';
-    const p = $('#dash-project').value, search = ($('#qr-search')?.value || '').toLowerCase();
-    let url = '/qrcodes/batch';
-    if (p) url += `?project_id=${p}`;
+    const search = ($('#qr-search')?.value || '').toLowerCase();
+    const filterParams = getDashFilterParams();
+    let url = '/qrcodes/batch' + (filterParams ? '?' + filterParams : '');
     const data = await api(url);
     if (!Array.isArray(data)) { grid.innerHTML = '<div class="empty-state">No QR codes</div>'; return; }
     let filtered = search ? data.filter(e => e.name.toLowerCase().includes(search) || e.employee_no.toLowerCase().includes(search)) : data;
@@ -1022,16 +1016,14 @@ function formatHeadcountDate(iso) {
 
 async function loadPersonnel(view = 'present') {
     const d = $('#dash-date').value || new Date().toISOString().split('T')[0];
-    const p = $('#dash-project').value, s = $('#dash-site').value;
     const personnelDateEl = $('#personnel-date-label');
     if (personnelDateEl) personnelDateEl.textContent = formatHeadcountDate(d) ? ` (${formatHeadcountDate(d)})` : '';
     const list = $('#personnel-list');
     list.innerHTML = '<div class="spinner"></div>';
 
     const sess = $('#dash-session')?.value || 'AM';
-    let url = `${view === 'present' ? '/headcount/detail' : '/headcount/missing'}?date=${d}&session=${sess}`;
-    if (p) url += `&project_id=${p}`;
-    if (s) url += `&site_id=${s}`;
+    const filterParams = getDashFilterParams();
+    let url = `${view === 'present' ? '/headcount/detail' : '/headcount/missing'}?date=${d}&session=${sess}` + (filterParams ? '&' + filterParams : '');
 
     const data = await api(url);
     if (!Array.isArray(data) || data.length === 0) {
