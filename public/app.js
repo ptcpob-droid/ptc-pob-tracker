@@ -226,7 +226,7 @@ function initLogin() {
     $('#login-username')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#login-pin')?.focus(); });
     $('#login-admin-username')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#login-totp')?.focus(); });
 
-    $('#user-badge').addEventListener('click', () => {
+    $('#btn-logout').addEventListener('click', () => {
         if (confirm('Logout?')) doLogout();
     });
 }
