@@ -1062,49 +1062,73 @@ async function loadPersonnel(view = 'present') {
 }
 
 // ============================================================
-// TRENDS (line chart)
+// TRENDS (line chart + weather)
 // ============================================================
 let _trendsInited = false;
 async function initTrends() {
     if (_trendsInited) return;
     _trendsInited = true;
-    const sess = $('#trend-session'), desig = $('#trend-designation'), nat = $('#trend-nationality'), days = $('#trend-days');
-    [sess, desig, nat, days].forEach(el => el?.addEventListener('change', loadTrends));
+    const els = ['trend-session', 'trend-designation', 'trend-nationality', 'trend-days', 'trend-dummy'];
+    els.forEach(id => { const el = $('#' + id); if (el) el.addEventListener('change', loadTrends); });
     await loadTrends();
 }
 
-async function loadTrends() {
-    const params = new URLSearchParams();
-    const filterParams = getDashFilterParams();
-    if (filterParams) filterParams.split('&').forEach(p => { const [k,v] = p.split('='); params.set(k,v); });
-    const sess = $('#trend-session').value;
-    const desig = $('#trend-designation').value;
-    const nat = $('#trend-nationality').value;
-    const days = $('#trend-days').value;
-    if (sess) params.set('session', sess);
-    if (desig) params.set('designation', desig);
-    if (nat) params.set('nationality', nat);
-    params.set('days', days);
+function generateDummyTrend(numDays) {
+    const labels = [], values = [];
+    const total = 350;
+    const today = new Date();
+    for (let i = numDays - 1; i >= 0; i--) {
+        const d = new Date(today); d.setDate(d.getDate() - i);
+        labels.push(d.toISOString().split('T')[0]);
+        const base = 270 + Math.round(Math.random() * 60);
+        const weekend = (d.getDay() === 5 || d.getDay() === 6) ? -Math.round(Math.random() * 80) : 0;
+        const weather = Math.random() < 0.1 ? -Math.round(Math.random() * 100) : 0;
+        values.push(Math.max(50, Math.min(total, base + weekend + weather)));
+    }
+    return {
+        labels, values, total,
+        designations: ['Engineer', 'Foreman', 'Technician', 'Welder', 'Electrician', 'Pipefitter', 'Rigger', 'Safety Officer'],
+        nationalities: ['Indian', 'Pakistani', 'Filipino', 'Bangladeshi', 'Egyptian', 'Omani', 'Emirati']
+    };
+}
 
-    const data = await api('/trends?' + params.toString());
+async function loadTrends() {
+    const isDummy = $('#trend-dummy')?.checked;
+    const numDays = parseInt($('#trend-days').value) || 30;
+    let data;
+
+    if (isDummy) {
+        data = generateDummyTrend(numDays);
+    } else {
+        const params = new URLSearchParams();
+        const filterParams = getDashFilterParams();
+        if (filterParams) filterParams.split('&').forEach(p => { const [k,v] = p.split('='); params.set(k,v); });
+        const sess = $('#trend-session').value;
+        const desig = $('#trend-designation').value;
+        const nat = $('#trend-nationality').value;
+        if (sess) params.set('session', sess);
+        if (desig) params.set('designation', desig);
+        if (nat) params.set('nationality', nat);
+        params.set('days', numDays);
+        data = await api('/trends?' + params.toString());
+    }
     if (!data || !data.labels) return;
 
-    // Populate filter dropdowns (keep selection)
-    const prevD = desig, prevN = nat;
     const dSel = $('#trend-designation'), nSel = $('#trend-nationality');
     if (data.designations) {
-        const curVal = dSel.value;
+        const cur = dSel.value;
         dSel.innerHTML = '<option value="">All Designations</option>' + data.designations.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
-        dSel.value = curVal;
+        dSel.value = cur;
     }
     if (data.nationalities) {
-        const curVal = nSel.value;
+        const cur = nSel.value;
         nSel.innerHTML = '<option value="">All Nationalities</option>' + data.nationalities.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-        nSel.value = curVal;
+        nSel.value = cur;
     }
 
     drawLineChart($('#trend-chart'), data.labels, data.values, data.total);
 
+    // Breakdown table
     const bd = $('#trend-breakdown');
     if (bd && data.labels.length) {
         const recent = data.labels.slice(-7);
@@ -1115,6 +1139,129 @@ async function loadTrends() {
                 return `<tr><td>${formatHeadcountDate(d)}</td><td><strong>${recentV[i]}</strong></td><td>${data.total}</td><td>${pct}%</td></tr>`;
             }).join('') + '</tbody></table>';
     }
+
+    // Weather
+    loadWeather(data.labels);
+}
+
+// Abu Dhabi onshore fields approx lat/lon
+const WEATHER_LAT = 23.65, WEATHER_LON = 54.35;
+
+async function loadWeather(labels) {
+    const cards = $('#weather-cards');
+    const canvas = $('#weather-chart');
+    if (!cards || !canvas || !labels || !labels.length) return;
+    cards.innerHTML = '<div class="spinner"></div>';
+
+    const start = labels[0], end = labels[labels.length - 1];
+    const today = new Date().toISOString().split('T')[0];
+    const useArchive = end < today;
+    const base = useArchive
+        ? 'https://archive-api.open-meteo.com/v1/archive'
+        : 'https://api.open-meteo.com/v1/forecast';
+
+    const url = `${base}?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}&start_date=${start}&end_date=${end}` +
+        `&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,relative_humidity_2m_mean,precipitation_sum` +
+        `&timezone=Asia%2FDubai`;
+
+    try {
+        const resp = await fetch(url);
+        const w = await resp.json();
+        if (!w.daily || !w.daily.time) throw new Error('No weather data');
+
+        const d = w.daily;
+        const avgTemp = d.temperature_2m_max.reduce((a, b) => a + (b || 0), 0) / d.temperature_2m_max.length;
+        const maxWind = Math.max(...d.windspeed_10m_max.filter(v => v != null));
+        const avgHumidity = d.relative_humidity_2m_mean.reduce((a, b) => a + (b || 0), 0) / d.relative_humidity_2m_mean.length;
+        const totalRain = d.precipitation_sum.reduce((a, b) => a + (b || 0), 0);
+        const maxTemp = Math.max(...d.temperature_2m_max.filter(v => v != null));
+
+        let warn = '';
+        if (maxWind > 40) warn += `High wind alert: ${maxWind.toFixed(0)} km/h recorded. `;
+        if (maxTemp > 48) warn += `Extreme heat: ${maxTemp.toFixed(0)}°C recorded. `;
+        if (totalRain > 5) warn += `Rain: ${totalRain.toFixed(1)} mm total. `;
+
+        cards.innerHTML = (warn ? `<div class="weather-warn" style="grid-column:1/-1">⚠ ${warn}Work stoppages may have occurred.</div>` : '') +
+            `<div class="stat-card"><div class="stat-value" style="color:#f59e0b">${avgTemp.toFixed(1)}°C</div><div class="stat-label">Avg Max Temp</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#06b6d4">${avgHumidity.toFixed(0)}%</div><div class="stat-label">Avg Humidity</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#8b5cf6">${maxWind.toFixed(0)} km/h</div><div class="stat-label">Max Wind Speed</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#3b82f6">${totalRain.toFixed(1)} mm</div><div class="stat-label">Total Rainfall</div></div>
+            <div class="stat-card"><div class="stat-value" style="color:#ef4444">${maxTemp.toFixed(0)}°C</div><div class="stat-label">Peak Temp</div></div>`;
+
+        drawWeatherChart(canvas, d.time, d.temperature_2m_max, d.windspeed_10m_max, d.relative_humidity_2m_mean);
+    } catch (e) {
+        cards.innerHTML = `<div class="empty-state">Weather data unavailable (${e.message})</div>`;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+function drawWeatherChart(canvas, dates, temps, winds, humidity) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    if (!dates || !dates.length) return;
+
+    const pad = { top: 30, right: 50, bottom: 40, left: 50 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+    const n = dates.length;
+    const stepX = n > 1 ? cw / (n - 1) : cw;
+
+    const allVals = [...(temps || []), ...(winds || []), ...(humidity || [])].filter(v => v != null);
+    const maxV = Math.max(...allVals, 1);
+
+    // Grid
+    ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + ch - (ch * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxV * i / 4), pad.left - 6, y + 3);
+    }
+
+    function drawLine(data, color, dash) {
+        if (!data) return;
+        ctx.setLineDash(dash || []);
+        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        data.forEach((v, i) => {
+            if (v == null) return;
+            const x = pad.left + i * stepX;
+            const y = pad.top + ch - (ch * v / maxV);
+            i === 0 || data[i - 1] == null ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    drawLine(temps, '#f59e0b');
+    drawLine(winds, '#8b5cf6', [4, 3]);
+    drawLine(humidity, '#06b6d4', [2, 2]);
+
+    // X labels
+    ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(n / 7));
+    dates.forEach((d, i) => {
+        if (i % step === 0 || i === n - 1) {
+            const x = pad.left + i * stepX;
+            const parts = d.split('-');
+            ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 14);
+        }
+    });
+
+    // Legend
+    const legend = [['Temp °C', '#f59e0b'], ['Wind km/h', '#8b5cf6'], ['Humidity %', '#06b6d4']];
+    let lx = pad.left;
+    ctx.font = '11px Inter, sans-serif';
+    legend.forEach(([label, color]) => {
+        ctx.fillStyle = color;
+        ctx.fillRect(lx, 6, 14, 3);
+        ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left';
+        ctx.fillText(label, lx + 18, 12);
+        lx += ctx.measureText(label).width + 34;
+    });
 }
 
 function drawLineChart(canvas, labels, values, total) {

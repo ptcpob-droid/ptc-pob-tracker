@@ -587,3 +587,12 @@ tr:last-child td { border-bottom: none; }
 #trend-breakdown table { width: 100%; border-collapse: collapse; }
 #trend-breakdown th, #trend-breakdown td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
 #trend-breakdown th { font-weight: 600; }
+
+.dummy-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.82rem; color: var(--text-dim);
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px 4px 8px; user-select: none; }
+.dummy-toggle input { accent-color: var(--primary); width: 16px; height: 16px; cursor: pointer; }
+.dummy-toggle:has(input:checked) { background: rgba(59,130,246,0.15); border-color: var(--primary); color: var(--primary); }
+
+/* Weather */
+#weather-cards .stat-card { min-width: 110px; }
+.weather-warn { background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.3); color: #eab308; border-radius: var(--radius); padding: 8px 12px; font-size: 0.82rem; margin-bottom: 8px; }
