@@ -122,13 +122,14 @@ if USE_POSTGRES:
     def _translate_sql(sql):
         sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
         sql = sql.replace('TIMESTAMP DEFAULT CURRENT_TIMESTAMP', "TIMESTAMP DEFAULT NOW()")
-        sql = sql.replace("datetime('now')", "NOW()")
+        # Order matters: replace longer patterns first
         sql = sql.replace("datetime('now', '+24 hours')", "NOW() + INTERVAL '24 hours'")
         sql = sql.replace("datetime('now', '+5 minutes')", "NOW() + INTERVAL '5 minutes'")
         sql = sql.replace(
             "datetime('now', '+' || ? || ' minutes')",
             "(NOW() + (%s || ' minutes')::interval)"
         )
+        sql = sql.replace("datetime('now')", "NOW()")
         sql = sql.replace('?', '%s')
         sql = re.sub(r'INSERT OR (?:REPLACE|IGNORE) INTO', 'INSERT INTO', sql)
         return sql
