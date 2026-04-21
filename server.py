@@ -8,7 +8,12 @@ import secrets
 import functools
 import re
 import tempfile
+import smtplib
+import threading
 from datetime import datetime, date, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 
 from flask import Flask, request, jsonify, send_from_directory, send_file
 import qrcode
@@ -26,7 +31,10 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 USE_POSTGRES = DATABASE_URL.startswith('postgres')
 ADMIN_DEFAULT_PIN = os.environ.get('ADMIN_PIN', '1234')
 IS_PRODUCTION = os.environ.get('RENDER', '') or os.environ.get('PRODUCTION', '')
-# No account lockout or disabling: login always allowed on correct credentials
+SMTP_USER = os.environ.get('SMTP_USER', 'ptcpob@gmail.com')
+SMTP_PASS = os.environ.get('SMTP_PASS', '')
+SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 
 ROSTER_CSV = os.path.join(os.path.dirname(__file__), 'adnoc_workforce_roste.csv')
 
@@ -935,6 +943,119 @@ def disable_2fa():
 
 
 # ============================================================
+# EMAIL NOTIFICATIONS
+# ============================================================
+
+def _generate_qr_image_bytes(uri):
+    """Generate a QR code PNG as bytes for embedding in emails."""
+    img = qrcode.make(uri, box_size=6, border=2)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf.read()
+
+
+def send_welcome_email(recipient_email, display_name, username, role, pin=None,
+                       totp_secret=None, totp_uri=None):
+    """Send account-creation notification email in a background thread."""
+    if not SMTP_PASS or not recipient_email:
+        return
+
+    def _send():
+        try:
+            msg = MIMEMultipart('related')
+            msg['From'] = f'PTC POB Tracker <{SMTP_USER}>'
+            msg['To'] = recipient_email
+            msg['Subject'] = 'Your PTC POB Tracker Account Has Been Created'
+
+            role_labels = {
+                'scanner': 'Contractor Scanner',
+                'focal_point': 'Divisional Focal Point',
+                'manager': 'HSE Manager',
+                'admin': 'Administrator',
+                'executive': 'Executive',
+            }
+            role_label = role_labels.get(role, role.title())
+            app_url = 'https://ptc-pob-tracker.onrender.com'
+
+            if role == 'scanner':
+                credentials_html = f'''
+                <tr><td style="padding:8px 12px;font-weight:600;color:#555;width:160px">Username</td>
+                    <td style="padding:8px 12px;font-family:monospace;font-size:15px">{username}</td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;color:#555">PIN</td>
+                    <td style="padding:8px 12px;font-family:monospace;font-size:15px">{pin or '(provided separately)'}</td></tr>
+                '''
+                auth_instructions = '''
+                <p style="color:#555;line-height:1.6">
+                    Use the <strong>Contractor Scanner</strong> login on the app. Enter your username and PIN to sign in.
+                </p>'''
+            else:
+                credentials_html = f'''
+                <tr><td style="padding:8px 12px;font-weight:600;color:#555;width:160px">Username</td>
+                    <td style="padding:8px 12px;font-family:monospace;font-size:15px">{username}</td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;color:#555">2FA Setup Key</td>
+                    <td style="padding:8px 12px;font-family:monospace;font-size:13px;word-break:break-all">{totp_secret}</td></tr>
+                '''
+                auth_instructions = '''
+                <p style="color:#555;line-height:1.6">
+                    Use the <strong>Admin / Manager</strong> login on the app. You will need a 2FA code from your authenticator app to sign in.
+                </p>
+                <p style="color:#555;line-height:1.6">
+                    <strong>Setup your authenticator:</strong> Open Google Authenticator, Microsoft Authenticator, or any TOTP app and scan the QR code below:
+                </p>
+                <div style="text-align:center;margin:16px 0">
+                    <img src="cid:qrcode" alt="2FA QR Code" style="border:1px solid #ddd;border-radius:8px;padding:8px;background:#fff" />
+                </div>
+                <p style="color:#888;font-size:12px;text-align:center">
+                    Can&rsquo;t scan? Enter the setup key manually in your authenticator app.
+                </p>'''
+
+            html = f'''
+            <div style="max-width:560px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+                <div style="background:#0d47a1;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0">
+                    <h2 style="margin:0;font-size:18px">PTC POB Tracker</h2>
+                </div>
+                <div style="background:#ffffff;padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
+                    <p style="color:#333;font-size:15px;line-height:1.6">Dear <strong>{display_name}</strong>,</p>
+                    <p style="color:#555;line-height:1.6">
+                        Your account on the <strong>PTC POB Tracker</strong> has been created. Below are your login details:
+                    </p>
+                    <table style="width:100%;border-collapse:collapse;margin:16px 0;background:#f8f9fa;border-radius:6px;overflow:hidden">
+                        <tr><td style="padding:8px 12px;font-weight:600;color:#555;width:160px">Role</td>
+                            <td style="padding:8px 12px">{role_label}</td></tr>
+                        {credentials_html}
+                        <tr><td style="padding:8px 12px;font-weight:600;color:#555">App URL</td>
+                            <td style="padding:8px 12px"><a href="{app_url}" style="color:#0d47a1">{app_url}</a></td></tr>
+                    </table>
+                    {auth_instructions}
+                    <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+                    <p style="color:#999;font-size:12px;line-height:1.5">
+                        This is an automated message. If you did not expect this, please contact your divisional focal point or HSE manager.
+                    </p>
+                </div>
+            </div>'''
+
+            msg.attach(MIMEText(html, 'html'))
+
+            if totp_uri and role != 'scanner':
+                qr_bytes = _generate_qr_image_bytes(totp_uri)
+                qr_img = MIMEImage(qr_bytes, _subtype='png')
+                qr_img.add_header('Content-ID', '<qrcode>')
+                qr_img.add_header('Content-Disposition', 'inline', filename='2fa-qrcode.png')
+                msg.attach(qr_img)
+
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.send_message(msg)
+            print(f"[EMAIL] Welcome email sent to {recipient_email}")
+        except Exception as e:
+            print(f"[EMAIL ERROR] Failed to send to {recipient_email}: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+# ============================================================
 # USER MANAGEMENT
 # ============================================================
 
@@ -984,11 +1105,10 @@ def api_add_user():
 
     email = data.get('email', '').strip()
     designation = data.get('designation', '').strip()
-    if role in ('scanner', 'focal_point'):
-        if not email:
-            return jsonify({'success': False, 'message': 'Email required for scanner/focal point'}), 400
-        if not designation:
-            return jsonify({'success': False, 'message': 'Designation required for scanner/focal point'}), 400
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required — a welcome notification will be sent'}), 400
+    if role in ('scanner', 'focal_point') and not designation:
+        return jsonify({'success': False, 'message': 'Designation required for scanner/focal point'}), 400
     if role == 'scanner' and not project_ids:
         return jsonify({'success': False, 'message': 'Assign at least one project for scanner'}), 400
     if role == 'focal_point' and not division_ids:
@@ -1025,12 +1145,27 @@ def api_add_user():
 
         audit(request.user['id'], 'user_created', f'{username} ({role})')
         result = {'success': True}
+        totp_uri = None
         if needs_2fa:
-            uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name='PTC POB Tracker')
+            totp_uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name='PTC POB Tracker')
             result['message'] = f'User {username} created. Give them the 2FA setup below to sign in.'
-            result['totp_setup'] = {'secret': totp_secret, 'uri': uri}
+            result['totp_setup'] = {'secret': totp_secret, 'uri': totp_uri}
         else:
             result['message'] = f'Scanner {username} created with PIN {pin}. Share the username and PIN with them.'
+
+        if email:
+            send_welcome_email(
+                recipient_email=email,
+                display_name=display_name,
+                username=username,
+                role=role,
+                pin=pin if role == 'scanner' else None,
+                totp_secret=totp_secret,
+                totp_uri=totp_uri,
+            )
+            result['email_sent'] = True
+            result['message'] += f' A welcome email has been sent to {email}.'
+
         return jsonify(result)
     except Exception as e:
         if 'UNIQUE' in str(e).upper() or 'unique' in str(e).lower():
