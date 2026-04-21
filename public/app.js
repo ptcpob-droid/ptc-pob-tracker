@@ -2005,9 +2005,80 @@ function fillNewUserAccess() {
     }
 }
 
+async function loadScannerStatus() {
+    const el = $('#scanner-status-list');
+    if (!el) return;
+    el.innerHTML = '<div class="spinner"></div>';
+    const scanners = await api('/scanner-status');
+    if (!Array.isArray(scanners) || !scanners.length) {
+        el.innerHTML = '<div class="empty-state">No scanners registered yet</div>';
+        return;
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0];
+
+    el.innerHTML = `<table class="scanner-status-table"><thead><tr>
+        <th>Scanner</th><th>Email</th><th>Designation</th><th>Projects</th>
+        <th>Approval</th><th>Scan Status</th><th>Security</th>
+        <th>Today</th><th>Total</th><th>Days Active</th><th>Last Scan</th>
+        </tr></thead><tbody>` +
+        scanners.map(s => {
+            const approvalOk = s.active === 1;
+            const approvalBadge = approvalOk
+                ? '<span class="scanner-badge sc-approved">Approved</span>'
+                : '<span class="scanner-badge sc-suspended">Suspended</span>';
+
+            let scanStatus, scanBadge;
+            if (!s.last_scan) {
+                scanStatus = 'never';
+                scanBadge = '<span class="scanner-badge sc-inactive">Never Scanned</span>';
+            } else if (s.last_scan.scan_date === today) {
+                scanStatus = 'active';
+                scanBadge = '<span class="scanner-badge sc-active">Active Today</span>';
+            } else if (s.last_scan.scan_date >= threeDaysAgo) {
+                scanStatus = 'recent';
+                scanBadge = '<span class="scanner-badge sc-recent">Recent</span>';
+            } else {
+                scanStatus = 'idle';
+                scanBadge = '<span class="scanner-badge sc-idle">Idle</span>';
+            }
+
+            let secBadge;
+            if (s.locked_until) {
+                secBadge = '<span class="scanner-badge sc-locked">Locked</span>';
+            } else if (s.failed_attempts > 3) {
+                secBadge = `<span class="scanner-badge sc-warning">Fails: ${s.failed_attempts}</span>`;
+            } else {
+                secBadge = '<span class="scanner-badge sc-secure">Secure</span>';
+            }
+
+            const projList = s.projects.map(p => `<span class="sc-proj-tag">${esc(p.area_name || '')} / ${esc(p.name)}</span>`).join(' ') || '<em style="opacity:0.5">None</em>';
+            const lastScanStr = s.last_scan
+                ? `${s.last_scan.scan_date} ${s.last_scan.session}`
+                : '—';
+
+            return `<tr>
+                <td><strong>${esc(s.display_name)}</strong><br><small class="text-dim">${esc(s.username)}</small></td>
+                <td>${esc(s.email || '—')}</td>
+                <td>${esc(s.designation || '—')}</td>
+                <td>${projList}</td>
+                <td>${approvalBadge}</td>
+                <td>${scanBadge}</td>
+                <td>${secBadge}</td>
+                <td style="text-align:center;font-weight:600">${s.today_scans}</td>
+                <td style="text-align:center">${s.total_scans}</td>
+                <td style="text-align:center">${s.days_active}</td>
+                <td><small>${lastScanStr}</small></td>
+            </tr>`;
+        }).join('') + '</tbody></table>';
+}
+
 function initAdmin() {
     loadAdmin();
     loadDivAreas();
+    loadScannerStatus();
+    $('#btn-refresh-scanners')?.addEventListener('click', loadScannerStatus);
 
     const roleSelect = $('#new-userrole');
     const areaWrap = $('#new-user-areas');

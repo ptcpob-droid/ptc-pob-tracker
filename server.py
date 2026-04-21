@@ -2297,6 +2297,58 @@ def api_export_roster():
                      as_attachment=True, download_name='roster_full.csv')
 
 
+@app.route('/api/scanner-status')
+@require_role('executive', 'admin')
+def api_scanner_status():
+    """Return all scanner users with scan activity, approval status, and security info."""
+    conn = get_db()
+    try:
+        scanners = db_fetchall(conn, '''
+            SELECT u.id, u.username, u.display_name, u.email, u.designation,
+                   u.active, u.created_at, u.last_login, u.failed_attempts, u.locked_until
+            FROM users u WHERE u.role = 'scanner' ORDER BY u.display_name
+        ''')
+        result = []
+        today = date.today().isoformat()
+        for s in scanners:
+            uid = s['id']
+            projects = db_fetchall(conn, '''
+                SELECT p.id, p.name, a2.name as area_name FROM user_project_access upa
+                JOIN projects p ON p.id = upa.project_id
+                LEFT JOIN areas a2 ON a2.id = p.area_id
+                WHERE upa.user_id = ?
+            ''', (uid,))
+
+            last_scan = db_fetchone(conn, '''
+                SELECT scan_date, session, scanned_at FROM attendance
+                WHERE supervisor_id = ? ORDER BY scanned_at DESC LIMIT 1
+            ''', (uid,))
+
+            today_count = db_fetchone(conn, '''
+                SELECT COUNT(*) as c FROM attendance
+                WHERE supervisor_id = ? AND scan_date = ?
+            ''', (uid, today))
+
+            total_scans = db_fetchone(conn, '''
+                SELECT COUNT(*) as c FROM attendance WHERE supervisor_id = ?
+            ''', (uid,))
+
+            days_active = db_fetchone(conn, '''
+                SELECT COUNT(DISTINCT scan_date) as c FROM attendance WHERE supervisor_id = ?
+            ''', (uid,))
+
+            row = dict(s)
+            row['projects'] = [dict(p) for p in projects]
+            row['last_scan'] = dict(last_scan) if last_scan else None
+            row['today_scans'] = today_count['c'] if today_count else 0
+            row['total_scans'] = total_scans['c'] if total_scans else 0
+            row['days_active'] = days_active['c'] if days_active else 0
+            result.append(row)
+    finally:
+        conn.close()
+    return jsonify(result)
+
+
 @app.route('/api/audit')
 @require_role('executive', 'admin')
 def api_audit():
