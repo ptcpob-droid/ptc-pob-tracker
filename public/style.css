@@ -596,3 +596,14 @@ tr:last-child td { border-bottom: none; }
 /* Weather */
 #weather-cards .stat-card { min-width: 110px; }
 .weather-warn { background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.3); color: #eab308; border-radius: var(--radius); padding: 8px 12px; font-size: 0.82rem; margin-bottom: 8px; }
+
+/* Health Trends */
+.risk-card { position: relative; overflow: hidden; }
+.risk-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.risk-critical { background: rgba(220,38,38,0.15); color: #dc2626; }
+.risk-high { background: rgba(234,88,12,0.13); color: #ea580c; }
+.risk-medium { background: rgba(217,119,6,0.12); color: #d97706; }
+.risk-low { background: rgba(22,163,74,0.10); color: #16a34a; }
+.ht-condition-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.ht-condition-tag { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 16px; padding: 4px 12px; font-size: 0.78rem; color: var(--text-dim); }
+.ht-condition-tag strong { color: #d97706; }

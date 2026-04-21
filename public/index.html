@@ -201,7 +201,11 @@
             </button>
             <button class="tab" data-tab="trends" id="trends-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                Trends
+                Attendance
+            </button>
+            <button class="tab" data-tab="health" id="health-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z"/></svg>
+                Health
             </button>
             <button class="tab" data-tab="admin" id="admin-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
@@ -330,7 +334,7 @@
             <div id="qr-grid-tab" class="qr-grid"></div>
         </div>
 
-        <!-- Trends Tab -->
+        <!-- Attendance Trends Tab -->
         <div id="tab-trends" class="tab-content">
             <!-- Row 1: Location filters -->
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
@@ -379,6 +383,41 @@
             <div class="section">
                 <h3 style="margin-bottom:12px">Daily Breakdown</h3>
                 <div id="trend-breakdown" class="table-wrap" style="max-height:400px;overflow:auto"></div>
+            </div>
+        </div>
+
+        <!-- Health Trends Tab -->
+        <div id="tab-health" class="tab-content">
+            <!-- Filters -->
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
+                <select id="ht-division" class="input"><option value="">All Divisions</option></select>
+                <select id="ht-area" class="input"><option value="">All Areas</option></select>
+                <select id="ht-contractor" class="input"><option value="">All Contractors</option></select>
+                <label class="dummy-toggle" title="Show sample data to preview the dashboard">
+                    <input type="checkbox" id="ht-dummy"> Demo
+                </label>
+            </div>
+
+            <!-- Risk Overview Cards -->
+            <div id="ht-risk-overview" class="stats-grid" style="margin-top:12px"></div>
+
+            <!-- Medical Compliance -->
+            <div class="section">
+                <h3 style="margin-bottom:12px">Medical Compliance</h3>
+                <div id="ht-medical-cards" class="stats-grid"></div>
+                <canvas id="ht-medical-chart" height="260" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px;margin-top:12px"></canvas>
+            </div>
+
+            <!-- Chronic Conditions -->
+            <div class="section">
+                <h3 style="margin-bottom:12px">Chronic Conditions &amp; Wellness</h3>
+                <div id="ht-chronic-cards" class="stats-grid"></div>
+            </div>
+
+            <!-- Workforce Risk Breakdown -->
+            <div class="section">
+                <h3 style="margin-bottom:12px">Personnel Health Risk Breakdown</h3>
+                <div id="ht-risk-table" class="table-wrap" style="max-height:500px;overflow:auto"></div>
             </div>
         </div>
 

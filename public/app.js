@@ -105,6 +105,7 @@ function showApp() {
     const admin = isAdminRole(role);
     $('#admin-tab').style.display = (role === 'admin' || role === 'executive') ? '' : 'none';
     $('#trends-tab').style.display = isAdminRole(role) ? '' : 'none';
+    $('#health-tab').style.display = isAdminRole(role) ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
     const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
     const qrTab = document.querySelector('.tab[data-tab="qrcodes"]');
@@ -1420,6 +1421,285 @@ function drawLineChart(canvas, labels, values, total) {
 }
 
 // ============================================================
+// HEALTH TRENDS
+// ============================================================
+
+let _healthInited = false;
+
+async function initHealthTrends() {
+    if (_healthInited) return;
+    _healthInited = true;
+
+    const hd = $('#ht-division');
+    const divs = await api('/divisions');
+    if (Array.isArray(divs)) hd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+
+    hd.addEventListener('change', async () => {
+        const ha = $('#ht-area'), hc = $('#ht-contractor');
+        ha.innerHTML = '<option value="">All Areas</option>';
+        hc.innerHTML = '<option value="">All Contractors</option>';
+        if (hd.value) {
+            const areas = await api(`/areas?division_id=${hd.value}`);
+            if (Array.isArray(areas)) ha.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        }
+        loadHealthTrends();
+    });
+    $('#ht-area')?.addEventListener('change', async () => {
+        const hc = $('#ht-contractor');
+        hc.innerHTML = '<option value="">All Contractors</option>';
+        const p = getHTFilterParams();
+        const ctrs = await api('/contractors' + (p ? '?' + p : ''));
+        if (Array.isArray(ctrs)) hc.innerHTML = '<option value="">All Contractors</option>' + ctrs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+        loadHealthTrends();
+    });
+    $('#ht-contractor')?.addEventListener('change', loadHealthTrends);
+    $('#ht-dummy')?.addEventListener('change', loadHealthTrends);
+    await loadHealthTrends();
+}
+
+function getHTFilterParams() {
+    const parts = [];
+    const div = $('#ht-division')?.value;
+    const area = $('#ht-area')?.value;
+    const ctr = $('#ht-contractor')?.value;
+    if (area) parts.push(`area_id=${area}`);
+    else if (div) parts.push(`division_id=${div}`);
+    if (ctr) parts.push(`subcontractor=${encodeURIComponent(ctr)}`);
+    return parts.join('&');
+}
+
+function generateDemoHealth() {
+    const total = 420;
+    const fit = 310, unfit = 18, no_result = total - fit - unfit;
+    const overdue = 34;
+    const has_chronic = 47, treated = 38, untreated = 9;
+    const good = 340, bad = 22, neutral = total - good - bad;
+    return {
+        total,
+        medical: { fit, unfit, no_result, overdue },
+        chronic: { has_chronic, treated, untreated },
+        feeling: { good, bad, neutral },
+        medical_freq: [
+            { label: '1 Year', count: 180 }, { label: '2 Years', count: 140 }, { label: '3 Years', count: 65 }, { label: 'N/A', count: 35 }
+        ],
+        chronic_types: [
+            { label: 'Diabetes', count: 18 }, { label: 'Hypertension', count: 12 },
+            { label: 'Cholesterol', count: 8 }, { label: 'Asthma', count: 5 },
+            { label: 'Back Pain (Chronic)', count: 4 }
+        ],
+        risk_people: [
+            { name: 'Ali Ahmed Khan', employee_no: 'CTR-1042', designation: 'Welder', nationality: 'Pakistani', project_name: 'BFN P11643', medical_result: 'UNFIT', next_medical_due: '2025-11-30', chronic_condition: 'Diabetes', chronic_treated: 'Yes', general_feeling: 'Tired' },
+            { name: 'Raju Sharma', employee_no: 'CTR-2108', designation: 'Pipefitter', nationality: 'Indian', project_name: 'Wave C3B', medical_result: 'Fit', next_medical_due: '2025-09-15', chronic_condition: '', chronic_treated: '', general_feeling: 'Poor' },
+            { name: 'Mohammed Hasan', employee_no: 'CTR-3055', designation: 'Electrician', nationality: 'Bangladeshi', project_name: 'BFN P11643', medical_result: 'UNFIT', next_medical_due: '2026-04-01', chronic_condition: 'Hypertension', chronic_treated: 'No', general_feeling: 'Unwell' },
+            { name: 'Jose Santos', employee_no: 'CTR-4221', designation: 'Rigger', nationality: 'Filipino', project_name: 'BFN P11643', medical_result: 'Fit', next_medical_due: '2025-12-10', chronic_condition: 'Cholesterol', chronic_treated: 'Yes - Under Control', general_feeling: 'Good' },
+            { name: 'Ahmad Faisal', employee_no: 'CTR-5099', designation: 'Foreman', nationality: 'Egyptian', project_name: 'Wave C3B', medical_result: 'UNFIT', next_medical_due: '2026-01-20', chronic_condition: 'Asthma', chronic_treated: 'No', general_feeling: 'Sick' },
+            { name: 'Suresh Patel', employee_no: 'CTR-6317', designation: 'Technician', nationality: 'Indian', project_name: 'BFN P11643', medical_result: 'Fit', next_medical_due: '2025-10-01', chronic_condition: 'Back Pain (Chronic)', chronic_treated: 'Yes', general_feeling: 'Fine' },
+        ]
+    };
+}
+
+function riskLevel(person) {
+    const today = new Date().toISOString().split('T')[0];
+    let score = 0;
+    const mr = (person.medical_result || '').toLowerCase();
+    if (mr.includes('unfit')) score += 3;
+    if (person.next_medical_due && person.next_medical_due < today) score += 2;
+    const cc = (person.chronic_condition || '').toLowerCase();
+    if (cc && !cc.includes('nil') && !cc.includes('none') && cc !== 'no' && cc !== 'n/a') {
+        score += 1;
+        const ct = (person.chronic_treated || '').toLowerCase();
+        if (!ct.includes('yes') && !ct.includes('control')) score += 2;
+    }
+    const gf = (person.general_feeling || '').toLowerCase();
+    if (gf.includes('bad') || gf.includes('poor') || gf.includes('sick') || gf.includes('unwell') || gf.includes('tired')) score += 1;
+    if (score >= 5) return { label: 'Critical', color: '#dc2626', bg: 'rgba(220,38,38,0.12)', cls: 'risk-critical' };
+    if (score >= 3) return { label: 'High', color: '#ea580c', bg: 'rgba(234,88,12,0.10)', cls: 'risk-high' };
+    if (score >= 2) return { label: 'Medium', color: '#d97706', bg: 'rgba(217,119,6,0.08)', cls: 'risk-medium' };
+    return { label: 'Low', color: '#16a34a', bg: 'rgba(22,163,74,0.06)', cls: 'risk-low' };
+}
+
+async function loadHealthTrends() {
+    const isDummy = $('#ht-dummy')?.checked;
+    let data;
+    if (isDummy) {
+        data = generateDemoHealth();
+    } else {
+        const p = getHTFilterParams();
+        data = await api('/health-trends' + (p ? '?' + p : ''));
+    }
+    if (!data) return;
+    renderHealthOverview(data);
+    renderMedicalSection(data);
+    renderChronicSection(data);
+    renderRiskTable(data);
+}
+
+function pct(n, t) { return t > 0 ? Math.round((n / t) * 100) : 0; }
+
+function renderHealthOverview(data) {
+    const el = $('#ht-risk-overview');
+    if (!el) return;
+    const t = data.total || 1;
+    const m = data.medical, c = data.chronic, f = data.feeling;
+    const fitPct = pct(m.fit, t), overduePct = pct(m.overdue, t);
+    const chronicPct = pct(c.has_chronic, t), unfitPct = pct(m.unfit, t);
+    const wellPct = pct(f.good, t), unwellPct = pct(f.bad, t);
+
+    const riskScore = Math.min(100, Math.round((m.unfit * 4 + m.overdue * 2 + c.untreated * 3 + f.bad * 1.5) / Math.max(t, 1) * 100));
+    let overallColor = '#16a34a', overallLabel = 'Low Risk';
+    if (riskScore >= 15) { overallColor = '#dc2626'; overallLabel = 'Critical'; }
+    else if (riskScore >= 8) { overallColor = '#ea580c'; overallLabel = 'High Risk'; }
+    else if (riskScore >= 3) { overallColor = '#d97706'; overallLabel = 'Moderate'; }
+
+    el.innerHTML = `
+        <div class="stat-card risk-card" style="border-left:4px solid ${overallColor}">
+            <div class="stat-value" style="color:${overallColor}">${overallLabel}</div>
+            <div class="stat-label">Overall Health Risk<br><small>Score: ${riskScore}/100</small></div>
+        </div>
+        <div class="stat-card"><div class="stat-value" style="color:#16a34a">${fitPct}%</div><div class="stat-label">Medically Fit<br><small>${m.fit} / ${t}</small></div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#dc2626">${m.unfit}</div><div class="stat-label">Unfit Personnel<br><small>${unfitPct}%</small></div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ea580c">${m.overdue}</div><div class="stat-label">Medical Overdue<br><small>${overduePct}%</small></div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#d97706">${c.has_chronic}</div><div class="stat-label">Chronic Conditions<br><small>${chronicPct}%</small></div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#3b82f6">${wellPct}%</div><div class="stat-label">Feeling Well<br><small>${f.good} / ${t}</small></div></div>`;
+}
+
+function renderMedicalSection(data) {
+    const cards = $('#ht-medical-cards'), canvas = $('#ht-medical-chart');
+    if (!cards) return;
+    const m = data.medical, t = data.total || 1;
+
+    cards.innerHTML = `
+        <div class="stat-card"><div class="stat-value" style="color:#16a34a">${m.fit}</div><div class="stat-label">Fit to Work</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#dc2626">${m.unfit}</div><div class="stat-label">Unfit</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#94a3b8">${m.no_result}</div><div class="stat-label">No Result</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ea580c">${m.overdue}</div><div class="stat-label">Overdue Medical</div></div>`;
+
+    if (data.medical_freq && data.medical_freq.length) {
+        cards.innerHTML += data.medical_freq.map(f =>
+            `<div class="stat-card"><div class="stat-value" style="color:#6366f1">${f.count}</div><div class="stat-label">${esc(f.label)} Cycle</div></div>`
+        ).join('');
+    }
+
+    if (canvas) drawMedicalChart(canvas, data);
+}
+
+function drawMedicalChart(canvas, data) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+
+    const m = data.medical, t = data.total || 1;
+    const bars = [
+        { label: 'Fit', value: m.fit, color: '#16a34a' },
+        { label: 'Unfit', value: m.unfit, color: '#dc2626' },
+        { label: 'No Result', value: m.no_result, color: '#94a3b8' },
+        { label: 'Overdue', value: m.overdue, color: '#ea580c' },
+    ];
+    const pad = { top: 30, right: 20, bottom: 50, left: 60 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+    const maxV = Math.max(...bars.map(b => b.value), 1);
+    const barW = Math.min(60, cw / bars.length * 0.6);
+    const gap = (cw - barW * bars.length) / (bars.length + 1);
+
+    ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + ch - (ch * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxV * i / 4), pad.left - 8, y + 4);
+    }
+
+    bars.forEach((b, i) => {
+        const x = pad.left + gap + i * (barW + gap);
+        const barH = (b.value / maxV) * ch;
+        const y = pad.top + ch - barH;
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        const r = 4;
+        ctx.moveTo(x + r, y); ctx.lineTo(x + barW - r, y);
+        ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+        ctx.lineTo(x + barW, pad.top + ch);
+        ctx.lineTo(x, pad.top + ch);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.fill();
+
+        ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 12px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(b.value, x + barW / 2, y - 8);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '11px Inter, sans-serif';
+        ctx.fillText(b.label, x + barW / 2, pad.top + ch + 18);
+        ctx.fillStyle = '#64748b'; ctx.font = '10px Inter, sans-serif';
+        ctx.fillText(`${pct(b.value, t)}%`, x + barW / 2, pad.top + ch + 34);
+    });
+
+    ctx.fillStyle = '#94a3b8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Medical Status Distribution', w / 2, 16);
+}
+
+function renderChronicSection(data) {
+    const el = $('#ht-chronic-cards');
+    if (!el) return;
+    const c = data.chronic, f = data.feeling, t = data.total || 1;
+
+    let html = `
+        <div class="stat-card"><div class="stat-value" style="color:#d97706">${c.has_chronic}</div><div class="stat-label">With Chronic Condition</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#16a34a">${c.treated}</div><div class="stat-label">Treated / Controlled</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#dc2626">${c.untreated}</div><div class="stat-label">Untreated / Uncontrolled</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#22c55e">${f.good}</div><div class="stat-label">Feeling Good</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ef4444">${f.bad}</div><div class="stat-label">Feeling Unwell</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#94a3b8">${f.neutral}</div><div class="stat-label">Not Reported</div></div>`;
+
+    if (data.chronic_types && data.chronic_types.length) {
+        html += '<div style="grid-column:1/-1;margin-top:8px"><h4 style="color:var(--text-dim);font-size:0.8rem;text-transform:uppercase;margin-bottom:8px">Top Conditions</h4><div class="ht-condition-list">';
+        data.chronic_types.forEach(ct => {
+            html += `<span class="ht-condition-tag">${esc(ct.label)} <strong>${ct.count}</strong></span>`;
+        });
+        html += '</div></div>';
+    }
+    el.innerHTML = html;
+}
+
+function renderRiskTable(data) {
+    const el = $('#ht-risk-table');
+    if (!el) return;
+    const people = data.risk_people || [];
+    if (!people.length) {
+        el.innerHTML = '<div class="empty-state">No flagged personnel</div>';
+        return;
+    }
+    const sorted = [...people].sort((a, b) => {
+        const ra = riskLevel(a), rb = riskLevel(b);
+        const order = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+        return (order[ra.label] ?? 9) - (order[rb.label] ?? 9);
+    });
+    el.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>Risk</th><th>Name</th><th>Employee No.</th><th>Designation</th><th>Nationality</th>
+        <th>Project</th><th>Medical Result</th><th>Next Medical</th>
+        <th>Chronic Condition</th><th>Treated?</th><th>Feeling</th>
+        </tr></thead><tbody>` +
+        sorted.map(p => {
+            const r = riskLevel(p);
+            const today = new Date().toISOString().split('T')[0];
+            const overdue = p.next_medical_due && p.next_medical_due < today;
+            return `<tr style="background:${r.bg}">
+                <td><span class="risk-badge ${r.cls}">${r.label}</span></td>
+                <td><strong>${esc(p.name)}</strong></td>
+                <td>${esc(p.employee_no)}</td>
+                <td>${esc(p.designation || '')}</td>
+                <td>${esc(p.nationality || '')}</td>
+                <td>${esc(p.project_name || '')}</td>
+                <td style="color:${(p.medical_result||'').toLowerCase().includes('unfit') ? '#dc2626' : '#16a34a'};font-weight:600">${esc(p.medical_result || 'N/A')}</td>
+                <td style="color:${overdue ? '#ea580c' : 'inherit'};font-weight:${overdue ? '600' : 'normal'}">${esc(p.next_medical_due || 'N/A')}${overdue ? ' ⚠' : ''}</td>
+                <td>${esc(p.chronic_condition || '—')}</td>
+                <td>${esc(p.chronic_treated || '—')}</td>
+                <td>${esc(p.general_feeling || '—')}</td>
+            </tr>`;
+        }).join('') + '</tbody></table>';
+}
+
+// ============================================================
 // QR CODES (separate tab for print view)
 // ============================================================
 async function loadQRCodesTab() {
@@ -1814,6 +2094,7 @@ function initTabs() {
             }
             else if (target === 'qrcodes') { loadProjects($('#qr-project-filter'), true); loadQRCodesTab(); }
             else if (target === 'trends') { initTrends(); }
+            else if (target === 'health') { initHealthTrends(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });

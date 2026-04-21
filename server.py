@@ -2012,6 +2012,87 @@ def api_trends():
     })
 
 
+@app.route('/api/health-trends')
+@require_auth
+def api_health_trends():
+    """Health metrics aggregated from employee welfare fields."""
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
+    subcontractor = request.args.get('subcontractor', '').strip()
+
+    conn = get_db()
+    try:
+        where = 'WHERE e.active = 1'
+        params = []
+        if area_id:
+            where += ' AND p.area_id = ?'
+            params.append(area_id)
+        elif division_id:
+            where += ' AND ar.division_id = ?'
+            params.append(division_id)
+        if subcontractor:
+            where += ' AND e.subcontractor = ?'
+            params.append(subcontractor)
+
+        base = f'''FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            {where}'''
+
+        total = db_fetchone(conn, f'SELECT COUNT(*) as c {base}', params)['c']
+
+        # Medical result breakdown
+        fit = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND LOWER(e.medical_result) LIKE '%fit%' AND LOWER(e.medical_result) NOT LIKE '%unfit%'", params)['c']
+        unfit = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND LOWER(e.medical_result) LIKE '%unfit%'", params)['c']
+        no_result = total - fit - unfit
+
+        # Medical overdue (next_medical_due < today)
+        today_str = date.today().isoformat()
+        overdue = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND e.next_medical_due != '' AND e.next_medical_due IS NOT NULL AND e.next_medical_due < ?", params + [today_str])['c']
+
+        # Chronic conditions
+        has_chronic = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT LIKE '%nil%' AND LOWER(e.chronic_condition) NOT LIKE '%none%' AND LOWER(e.chronic_condition) NOT LIKE '%no%' AND LOWER(e.chronic_condition) != 'n/a'", params)['c']
+        chronic_treated = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND e.chronic_treated IS NOT NULL AND (LOWER(e.chronic_treated) LIKE '%yes%' OR LOWER(e.chronic_treated) LIKE '%control%')", params)['c']
+        chronic_untreated = has_chronic - chronic_treated if has_chronic > chronic_treated else 0
+
+        # General feeling
+        feel_good = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND e.general_feeling IS NOT NULL AND (LOWER(e.general_feeling) LIKE '%good%' OR LOWER(e.general_feeling) LIKE '%fine%' OR LOWER(e.general_feeling) LIKE '%well%' OR LOWER(e.general_feeling) LIKE '%excellent%')", params)['c']
+        feel_bad = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND e.general_feeling IS NOT NULL AND (LOWER(e.general_feeling) LIKE '%bad%' OR LOWER(e.general_feeling) LIKE '%poor%' OR LOWER(e.general_feeling) LIKE '%sick%' OR LOWER(e.general_feeling) LIKE '%unwell%' OR LOWER(e.general_feeling) LIKE '%tired%')", params)['c']
+        feel_neutral = total - feel_good - feel_bad
+
+        # Medical frequency breakdown
+        freq_rows = db_fetchall(conn, f"SELECT e.medical_frequency, COUNT(*) as c {base} AND e.medical_frequency IS NOT NULL AND e.medical_frequency != '' GROUP BY e.medical_frequency ORDER BY c DESC", params)
+
+        # Chronic condition types
+        chronic_rows = db_fetchall(conn, f"SELECT e.chronic_condition, COUNT(*) as c {base} AND e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT LIKE '%nil%' AND LOWER(e.chronic_condition) NOT LIKE '%none%' AND LOWER(e.chronic_condition) NOT LIKE '%no%' AND LOWER(e.chronic_condition) != 'n/a' GROUP BY e.chronic_condition ORDER BY c DESC LIMIT 15", params)
+
+        # Per-person risk list (those with any flag)
+        risk_sql = f'''SELECT e.name, e.employee_no, e.designation, e.nationality,
+            e.medical_result, e.next_medical_due, e.chronic_condition, e.chronic_treated,
+            e.general_feeling, e.medical_frequency, p.name as project_name
+            {base}
+            AND (
+                LOWER(e.medical_result) LIKE '%unfit%'
+                OR (e.next_medical_due != '' AND e.next_medical_due IS NOT NULL AND e.next_medical_due < ?)
+                OR (e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT LIKE '%nil%' AND LOWER(e.chronic_condition) NOT LIKE '%none%' AND LOWER(e.chronic_condition) NOT LIKE '%no%' AND LOWER(e.chronic_condition) != 'n/a')
+                OR (e.general_feeling IS NOT NULL AND (LOWER(e.general_feeling) LIKE '%bad%' OR LOWER(e.general_feeling) LIKE '%poor%' OR LOWER(e.general_feeling) LIKE '%sick%' OR LOWER(e.general_feeling) LIKE '%unwell%'))
+            )
+            ORDER BY e.name LIMIT 500'''
+        risk_people = db_fetchall(conn, risk_sql, params + [today_str])
+    finally:
+        conn.close()
+
+    return jsonify({
+        'total': total,
+        'medical': {'fit': fit, 'unfit': unfit, 'no_result': no_result, 'overdue': overdue},
+        'chronic': {'has_chronic': has_chronic, 'treated': chronic_treated, 'untreated': chronic_untreated},
+        'feeling': {'good': feel_good, 'bad': feel_bad, 'neutral': feel_neutral},
+        'medical_freq': [{'label': r['medical_frequency'], 'count': r['c']} for r in freq_rows],
+        'chronic_types': [{'label': r['chronic_condition'], 'count': r['c']} for r in chronic_rows],
+        'risk_people': [dict(r) for r in risk_people],
+    })
+
+
 # ============================================================
 # QR / Export / Audit
 # ============================================================
