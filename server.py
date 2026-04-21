@@ -1099,20 +1099,26 @@ def admin_reset_2fa(user_id):
 # DIVISIONS / AREAS / PROJECTS (filtered by user access)
 # ============================================================
 
+@app.route('/api/ping')
+def ping():
+    return jsonify({'pong': True, 'db_type': 'PostgreSQL' if DATABASE_URL else 'SQLite'})
+
 @app.route('/api/health')
 def health():
     """Diagnostic endpoint."""
-    conn = get_db()
     try:
-        row = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
-        users = row['c'] if isinstance(row, dict) else row[0]
-        prow = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects')
-        projects = prow['c'] if isinstance(prow, dict) else prow[0]
-        return jsonify({'status': 'ok', 'users': users, 'projects': projects, 'db': 'PostgreSQL' if DATABASE_URL else 'SQLite'})
+        conn = get_db()
+        try:
+            row = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
+            users = row['c'] if isinstance(row, dict) else row[0]
+            prow = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects')
+            projects = prow['c'] if isinstance(prow, dict) else prow[0]
+            return jsonify({'status': 'ok', 'users': users, 'projects': projects, 'db': 'PostgreSQL' if DATABASE_URL else 'SQLite'})
+        finally:
+            conn.close()
     except Exception as e:
-        return jsonify({'status': 'error', 'error': str(e)}), 500
-    finally:
-        conn.close()
+        import traceback
+        return jsonify({'status': 'error', 'error': str(e), 'trace': traceback.format_exc()}), 500
 
 @app.route('/')
 def index():
