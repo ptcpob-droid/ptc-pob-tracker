@@ -973,20 +973,30 @@ function renderWorkerTable(data) {
     if (label) label.textContent = `${data.length} worker${data.length !== 1 ? 's' : ''}`;
     if (!data.length) { wrap.innerHTML = '<div class="empty-state">No workers found</div>'; return; }
     wrap.innerHTML = `<table class="worker-table"><thead><tr>
-        <th>Agreement No.</th><th>Project</th><th>Name</th><th>Nationality</th><th>DOB</th>
-        <th>Designation</th><th>Physical Work Location</th><th>Residing Camp</th>
-        <th>Employee No.</th><th>Qualification</th><th>Date of Joining</th>
-        <th>Date of Deployment</th><th>Medical Date</th><th>Discipline</th>
-        <th>Sub-contractor</th><th>Remarks</th><th>QR</th></tr></thead><tbody>` +
+        <th>SL#</th><th>Agreement No.</th><th>Asset</th><th>Contractor</th><th>Project</th>
+        <th>Name</th><th>Designation</th><th>Nationality</th><th>DOB</th><th>Age</th>
+        <th>EID / Passport</th><th>Fieldglass</th><th>Work Location</th><th>Camp</th>
+        <th>Employee No.</th><th>Qualification</th><th>Joining</th><th>Deployment</th>
+        <th>Medical Date</th><th>Discipline</th><th>Sub-contractor</th>
+        <th>Med Freq</th><th>Last Medical</th><th>Next Medical</th><th>Result</th>
+        <th>Chronic</th><th>Treated?</th><th>Feeling</th><th>Remarks</th><th>QR</th>
+        </tr></thead><tbody>` +
         data.slice(0, 500).map((w) => `<tr>
-        <td>${esc(w.agreement_no || '')}</td><td>${esc(w.project_name || '')}</td>
-        <td>${esc(w.name)}</td><td>${esc(w.nationality || '')}</td><td>${esc(w.dob || '')}</td>
-        <td>${esc(w.designation || '')}</td><td>${esc(w.work_location || '')}</td>
-        <td>${esc(w.camp_name || '')}</td><td>${esc(w.employee_no)}</td>
-        <td>${esc(w.qualification || '')}</td><td>${esc(w.date_joining || '')}</td>
-        <td>${esc(w.date_deployment || '')}</td><td>${esc(w.medical_date || '')}</td>
-        <td>${esc(w.discipline || '')}</td><td>${esc(w.subcontractor || '')}</td>
-        <td>${esc(w.remarks || '')}</td>
+        <td>${esc(w.srl || '')}</td><td>${esc(w.agreement_no || '')}</td>
+        <td>${esc(w.asset_name || '')}</td><td>${esc(w.contractor || '')}</td>
+        <td>${esc(w.project_name || '')}</td><td>${esc(w.name)}</td>
+        <td>${esc(w.designation || '')}</td><td>${esc(w.nationality || '')}</td>
+        <td>${esc(w.dob || '')}</td><td>${esc(w.age || '')}</td>
+        <td>${esc(w.eid_passport || '')}</td><td>${esc(w.fieldglass_status || '')}</td>
+        <td>${esc(w.work_location || '')}</td><td>${esc(w.camp_name || '')}</td>
+        <td>${esc(w.employee_no)}</td><td>${esc(w.qualification || '')}</td>
+        <td>${esc(w.date_joining || '')}</td><td>${esc(w.date_deployment || '')}</td>
+        <td>${esc(w.medical_date || '')}</td><td>${esc(w.discipline || '')}</td>
+        <td>${esc(w.subcontractor || '')}</td>
+        <td>${esc(w.medical_frequency || '')}</td><td>${esc(w.last_medical_date || '')}</td>
+        <td>${esc(w.next_medical_due || '')}</td><td>${esc(w.medical_result || '')}</td>
+        <td>${esc(w.chronic_condition || '')}</td><td>${esc(w.chronic_treated || '')}</td>
+        <td>${esc(w.general_feeling || '')}</td><td>${esc(w.remarks || '')}</td>
         <td><button class="btn-qr-dl" data-empno="${esc(w.employee_no)}" data-pid="${w.project_id}" data-name="${esc(w.name)}">QR</button></td>
         </tr>`).join('') + '</tbody></table>';
 

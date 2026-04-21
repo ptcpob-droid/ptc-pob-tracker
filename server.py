@@ -245,6 +245,12 @@ def init_db():
                 employee_no TEXT NOT NULL, qualification TEXT, date_joining TEXT,
                 date_deployment TEXT, medical_date TEXT, discipline TEXT,
                 subcontractor TEXT, remarks TEXT,
+                asset_name TEXT, contractor TEXT, age TEXT,
+                eid_passport TEXT, fieldglass_status TEXT,
+                medical_frequency TEXT, last_medical_date TEXT,
+                next_medical_due TEXT, medical_result TEXT,
+                chronic_condition TEXT, chronic_treated TEXT,
+                general_feeling TEXT,
                 project_id INTEGER NOT NULL REFERENCES projects(id),
                 active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -360,6 +366,18 @@ def init_db():
             'ALTER TABLE users ADD COLUMN designation TEXT',
             'ALTER TABLE attendance ADD COLUMN scanner_email TEXT',
             'ALTER TABLE attendance ADD COLUMN scanner_designation TEXT',
+            'ALTER TABLE employees ADD COLUMN asset_name TEXT',
+            'ALTER TABLE employees ADD COLUMN contractor TEXT',
+            'ALTER TABLE employees ADD COLUMN age TEXT',
+            'ALTER TABLE employees ADD COLUMN eid_passport TEXT',
+            'ALTER TABLE employees ADD COLUMN fieldglass_status TEXT',
+            'ALTER TABLE employees ADD COLUMN medical_frequency TEXT',
+            'ALTER TABLE employees ADD COLUMN last_medical_date TEXT',
+            'ALTER TABLE employees ADD COLUMN next_medical_due TEXT',
+            'ALTER TABLE employees ADD COLUMN medical_result TEXT',
+            'ALTER TABLE employees ADD COLUMN chronic_condition TEXT',
+            'ALTER TABLE employees ADD COLUMN chronic_treated TEXT',
+            'ALTER TABLE employees ADD COLUMN general_feeling TEXT',
         ]:
             try:
                 db_execute(conn, alter)
@@ -2014,9 +2032,12 @@ def api_export_roster():
         db_execute(conn, 'DELETE FROM download_tokens WHERE token = ?', (dl_token,))
         conn.commit()
         project_id = request.args.get('project_id', '')
-        query = '''SELECT e.srl, e.agreement_no, e.name, e.nationality, e.dob, e.designation,
+        query = '''SELECT e.srl, e.agreement_no, e.asset_name, e.contractor, e.name, e.nationality, e.dob, e.designation,
+            e.age, e.eid_passport, e.fieldglass_status,
             e.work_location, e.camp_name, e.employee_no, e.qualification, e.date_joining,
-            e.date_deployment, e.medical_date, e.discipline, e.subcontractor, e.remarks,
+            e.date_deployment, e.medical_date, e.discipline, e.subcontractor,
+            e.medical_frequency, e.last_medical_date, e.next_medical_due, e.medical_result,
+            e.chronic_condition, e.chronic_treated, e.general_feeling, e.remarks,
             p.name as project_name
             FROM employees e JOIN projects p ON p.id = e.project_id WHERE e.active = 1'''
         params = []
@@ -2031,19 +2052,29 @@ def api_export_roster():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        'Srl', 'Agreement No.', 'Name', 'Nationality', 'DOB', 'Designation',
-        'Physical Work Location (Site / City Name)', 'Residing Camp Name & Location',
-        'Employee No. / Contractor Ref.', 'Qualification', 'Date of Joining',
-        'Date of Deployment with NQC Projects', 'Latest Periodic Medical conducted (Date)',
-        'Discipline (Civil/Electrical/Mechanical/Others)', 'Sub-contractor/Manpower Supplier', 'Remarks', 'Project'
+        'SL#', 'Agreement No.', 'Asset Name', 'Contractor', 'Project Name',
+        'Employee Full Name', 'Designation', 'Nationality', 'DOB', 'Age',
+        'EID / Passport #', 'Fieldglass Status', 'Physical Work Location',
+        'Residing Camp Name & Location', 'Employee No. Contractor Ref.',
+        'Qualification', 'Date of Joining', 'Date of Deployment',
+        'Latest Medical Date', 'Discipline', 'Sub-contractor Manpower Supplier',
+        'Frequency of Medical', 'Date of Last Medical', 'Date of Next Medical Due',
+        'Result (Fit/Unfit)', 'Chronic Condition', 'Chronic Treated?',
+        'How Do You Generally Feel?', 'Remarks'
     ])
     for r in rows:
         writer.writerow([
-            r.get('srl') or '', r.get('agreement_no') or '', r.get('name') or '', r.get('nationality') or '',
-            r.get('dob') or '', r.get('designation') or '', r.get('work_location') or '', r.get('camp_name') or '',
-            r.get('employee_no') or '', r.get('qualification') or '', r.get('date_joining') or '',
-            r.get('date_deployment') or '', r.get('medical_date') or '', r.get('discipline') or '',
-            r.get('subcontractor') or '', r.get('remarks') or '', r.get('project_name') or ''
+            r.get('srl') or '', r.get('agreement_no') or '', r.get('asset_name') or '',
+            r.get('contractor') or '', r.get('project_name') or '', r.get('name') or '',
+            r.get('designation') or '', r.get('nationality') or '', r.get('dob') or '',
+            r.get('age') or '', r.get('eid_passport') or '', r.get('fieldglass_status') or '',
+            r.get('work_location') or '', r.get('camp_name') or '', r.get('employee_no') or '',
+            r.get('qualification') or '', r.get('date_joining') or '', r.get('date_deployment') or '',
+            r.get('medical_date') or '', r.get('discipline') or '', r.get('subcontractor') or '',
+            r.get('medical_frequency') or '', r.get('last_medical_date') or '',
+            r.get('next_medical_due') or '', r.get('medical_result') or '',
+            r.get('chronic_condition') or '', r.get('chronic_treated') or '',
+            r.get('general_feeling') or '', r.get('remarks') or ''
         ])
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
@@ -2172,7 +2203,7 @@ def _cell_str(row, idx):
 
 
 def import_excel(xlsx_path, area_id=None):
-    """Import sheets from the standard 16-column Excel template. Projects are created under the given area_id."""
+    """Import sheets from 16-column or 29-column Excel template. Auto-detects format. Projects created under given area_id."""
     try:
         import openpyxl
     except ImportError:
@@ -2215,57 +2246,119 @@ def import_excel(xlsx_path, area_id=None):
                 db_execute(conn, 'INSERT INTO sites (name, project_id, active) VALUES (?, ?, 1)', (site_name, project_id))
                 conn.commit()
 
-            # Fixed 16-column template:
-            # 0:Srl, 1:Agreement No., 2:Name, 3:Nationality, 4:DOB, 5:Designation,
-            # 6:Physical Work Location, 7:Residing Camp Name, 8:Employee No./Contractor Ref.,
-            # 9:Qualification, 10:Date of Joining, 11:Date of Deployment,
-            # 12:Medical Date, 13:Discipline, 14:Sub-contractor, 15:Remarks
+            # Detect format: 29-col welfare template vs 16-col standard
+            # 29-col header row has "ASSET NAME" or "CONTRACTOR" or "EID"
+            is_29col = False
+            header_row_num = 1
+            for test_row in ws.iter_rows(min_row=1, max_row=6, values_only=True):
+                header_text = ' '.join(str(c or '').lower() for c in test_row)
+                if 'asset name' in header_text or 'fieldglass' in header_text or 'eid' in header_text:
+                    is_29col = True
+                    break
+                header_row_num += 1
+            data_start = header_row_num + 1 if is_29col else 2
+
             count = 0
             sites_found = set()
-            for row in ws.iter_rows(min_row=2, values_only=True):
+            for row in ws.iter_rows(min_row=data_start, values_only=True):
                 if not row or len(row) < 9:
                     continue
                 try:
-                    name = _cell_str(row, 2)
-                    employee_no = _cell_str(row, 8)
-                    if not name or not employee_no:
-                        continue
-                    skip = employee_no.lower()
-                    if skip in ('employee no.', 'contractor ref.', 'employee no', 'none', ''):
-                        continue
-
-                    srl = _cell_str(row, 0)
-                    agreement_no = _cell_str(row, 1)
-                    nationality = _cell_str(row, 3)
-                    dob = _cell_str(row, 4)
-                    designation = _cell_str(row, 5)
-                    work_location = _cell_str(row, 6) or site_name
-                    camp_name = _cell_str(row, 7)
-                    qualification = _cell_str(row, 9)
-                    date_joining = _cell_str(row, 10)
-                    date_deployment = _cell_str(row, 11)
-                    medical_date = _cell_str(row, 12)
-                    discipline = _cell_str(row, 13)
-                    subcontractor = _cell_str(row, 14)
-                    remarks = _cell_str(row, 15)
+                    if is_29col:
+                        # 29-col: 0:SL#, 1:Agreement, 2:Asset, 3:Contractor, 4:Project, 5:Name, 6:Designation,
+                        # 7:Nationality, 8:DOB, 9:Age, 10:EID, 11:Fieldglass, 12:Work Location,
+                        # 13:Camp, 14:Employee No, 15:Qualification, 16:Date Joining, 17:Date Deployment,
+                        # 18:Medical Date, 19:Discipline, 20:Subcontractor, 21:Med Frequency,
+                        # 22:Last Medical, 23:Next Medical, 24:Result, 25:Chronic, 26:Chronic Treated,
+                        # 27:General Feeling, 28:Remarks
+                        name = _cell_str(row, 5)
+                        employee_no = _cell_str(row, 14)
+                        if not name or not employee_no:
+                            continue
+                        skip = employee_no.lower()
+                        if skip in ('employee no.', 'contractor ref.', 'employee no', 'none', ''):
+                            continue
+                        srl = _cell_str(row, 0)
+                        agreement_no = _cell_str(row, 1)
+                        asset_name = _cell_str(row, 2)
+                        contractor_col = _cell_str(row, 3)
+                        designation = _cell_str(row, 6)
+                        nationality = _cell_str(row, 7)
+                        dob = _cell_str(row, 8)
+                        age = _cell_str(row, 9)
+                        eid_passport = _cell_str(row, 10)
+                        fieldglass_status = _cell_str(row, 11)
+                        work_location = _cell_str(row, 12) or site_name
+                        camp_name = _cell_str(row, 13)
+                        qualification = _cell_str(row, 15)
+                        date_joining = _cell_str(row, 16)
+                        date_deployment = _cell_str(row, 17)
+                        medical_date = _cell_str(row, 18)
+                        discipline = _cell_str(row, 19)
+                        subcontractor = _cell_str(row, 20)
+                        medical_frequency = _cell_str(row, 21)
+                        last_medical_date = _cell_str(row, 22)
+                        next_medical_due = _cell_str(row, 23)
+                        medical_result = _cell_str(row, 24)
+                        chronic_condition = _cell_str(row, 25)
+                        chronic_treated = _cell_str(row, 26)
+                        general_feeling = _cell_str(row, 27)
+                        remarks = _cell_str(row, 28)
+                    else:
+                        # 16-col standard
+                        name = _cell_str(row, 2)
+                        employee_no = _cell_str(row, 8)
+                        if not name or not employee_no:
+                            continue
+                        skip = employee_no.lower()
+                        if skip in ('employee no.', 'contractor ref.', 'employee no', 'none', ''):
+                            continue
+                        srl = _cell_str(row, 0)
+                        agreement_no = _cell_str(row, 1)
+                        nationality = _cell_str(row, 3)
+                        dob = _cell_str(row, 4)
+                        designation = _cell_str(row, 5)
+                        work_location = _cell_str(row, 6) or site_name
+                        camp_name = _cell_str(row, 7)
+                        qualification = _cell_str(row, 9)
+                        date_joining = _cell_str(row, 10)
+                        date_deployment = _cell_str(row, 11)
+                        medical_date = _cell_str(row, 12)
+                        discipline = _cell_str(row, 13)
+                        subcontractor = _cell_str(row, 14)
+                        remarks = _cell_str(row, 15)
+                        asset_name = contractor_col = age = eid_passport = fieldglass_status = ''
+                        medical_frequency = last_medical_date = next_medical_due = medical_result = ''
+                        chronic_condition = chronic_treated = general_feeling = ''
 
                     existing_emp = db_fetchone(conn, 'SELECT id FROM employees WHERE employee_no = ? AND project_id = ?', (employee_no, project_id))
                     if existing_emp:
                         db_execute(conn, '''UPDATE employees SET srl=?, agreement_no=?, name=?, nationality=?, dob=?,
                             designation=?, work_location=?, camp_name=?, qualification=?, date_joining=?,
-                            date_deployment=?, medical_date=?, discipline=?, subcontractor=?, remarks=?
+                            date_deployment=?, medical_date=?, discipline=?, subcontractor=?, remarks=?,
+                            asset_name=?, contractor=?, age=?, eid_passport=?, fieldglass_status=?,
+                            medical_frequency=?, last_medical_date=?, next_medical_due=?, medical_result=?,
+                            chronic_condition=?, chronic_treated=?, general_feeling=?
                             WHERE employee_no = ? AND project_id = ?''',
                             (srl, agreement_no, name, nationality, dob, designation, work_location, camp_name,
                              qualification, date_joining, date_deployment, medical_date, discipline, subcontractor,
-                             remarks, employee_no, project_id))
+                             remarks, asset_name, contractor_col, age, eid_passport, fieldglass_status,
+                             medical_frequency, last_medical_date, next_medical_due, medical_result,
+                             chronic_condition, chronic_treated, general_feeling,
+                             employee_no, project_id))
                     else:
                         db_execute(conn, '''INSERT INTO employees (srl, agreement_no, name, nationality, dob, designation,
                             work_location, camp_name, employee_no, qualification, date_joining, date_deployment,
-                            medical_date, discipline, subcontractor, remarks, project_id)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                            medical_date, discipline, subcontractor, remarks,
+                            asset_name, contractor, age, eid_passport, fieldglass_status,
+                            medical_frequency, last_medical_date, next_medical_due, medical_result,
+                            chronic_condition, chronic_treated, general_feeling, project_id)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                             (srl, agreement_no, name, nationality, dob, designation, work_location, camp_name,
                              employee_no, qualification, date_joining, date_deployment, medical_date, discipline,
-                             subcontractor, remarks, project_id))
+                             subcontractor, remarks, asset_name, contractor_col, age, eid_passport, fieldglass_status,
+                             medical_frequency, last_medical_date, next_medical_due, medical_result,
+                             chronic_condition, chronic_treated, general_feeling, project_id))
                     count += 1
                     if work_location and work_location != site_name:
                         sites_found.add(work_location)
