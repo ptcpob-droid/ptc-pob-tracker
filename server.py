@@ -645,6 +645,14 @@ def get_user_divisions(conn, user_id, role):
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     """Two login paths: scanner (username+PIN) and admin (username+2FA)."""
+    try:
+        return _do_login()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
+
+def _do_login():
     if not check_ip_rate_limit(request.remote_addr):
         return jsonify({'success': False, 'message': 'Too many attempts. Wait 1 minute.'}), 429
 
@@ -1090,6 +1098,21 @@ def admin_reset_2fa(user_id):
 # ============================================================
 # DIVISIONS / AREAS / PROJECTS (filtered by user access)
 # ============================================================
+
+@app.route('/api/health')
+def health():
+    """Diagnostic endpoint."""
+    conn = get_db()
+    try:
+        row = db_fetchone(conn, 'SELECT COUNT(*) as c FROM users')
+        users = row['c'] if isinstance(row, dict) else row[0]
+        prow = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects')
+        projects = prow['c'] if isinstance(prow, dict) else prow[0]
+        return jsonify({'status': 'ok', 'users': users, 'projects': projects, 'db': 'PostgreSQL' if DATABASE_URL else 'SQLite'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/')
 def index():
