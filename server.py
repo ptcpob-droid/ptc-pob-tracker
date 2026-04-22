@@ -1105,8 +1105,6 @@ def api_add_user():
 
     email = data.get('email', '').strip()
     designation = data.get('designation', '').strip()
-    if not email:
-        return jsonify({'success': False, 'message': 'Email is required — a welcome notification will be sent'}), 400
     if role in ('scanner', 'focal_point') and not designation:
         return jsonify({'success': False, 'message': 'Designation required for scanner/focal point'}), 400
     if role == 'scanner' and not project_ids:
