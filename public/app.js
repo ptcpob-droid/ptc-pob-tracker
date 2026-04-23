@@ -845,7 +845,7 @@ function buildSliderDates(mode) {
             dates.push(d.toISOString().split('T')[0]);
         }
     } else {
-        for (let i = 30; i >= 0; i--) {
+        for (let i = 59; i >= 0; i--) {
             const d = new Date(today);
             d.setDate(d.getDate() - i);
             dates.push(d.toISOString().split('T')[0]);
@@ -869,6 +869,58 @@ function formatSliderLabel(dateStr, mode) {
         return `Week of ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
     }
     return d.toLocaleDateString('en-GB', opts);
+}
+
+const _tabSliders = {};
+
+function initTabSlider(containerEl, refreshFn) {
+    if (!containerEl) return null;
+    const slider = containerEl.querySelector('.tab-slider-range');
+    const label = containerEl.querySelector('.tab-slider-label');
+    const modeSelect = containerEl.querySelector('.tab-slider-mode');
+    const prevBtn = containerEl.querySelector('.tab-slider-prev');
+    const nextBtn = containerEl.querySelector('.tab-slider-next');
+    const todayBtn = containerEl.querySelector('.tab-slider-today');
+    const sessionBtns = containerEl.querySelectorAll('.tab-session-btn');
+    if (!slider) return null;
+
+    const state = { dates: [], session: 'AM' };
+
+    function rebuild() {
+        const mode = modeSelect?.value || 'day';
+        state.dates = buildSliderDates(mode);
+        slider.max = state.dates.length - 1;
+        slider.value = state.dates.length - 1;
+        updateLabel();
+    }
+
+    function updateLabel() {
+        const mode = modeSelect?.value || 'day';
+        const ds = getDate();
+        if (label) label.textContent = formatSliderLabel(ds, mode);
+    }
+
+    function getDate() {
+        if (!state.dates.length) return new Date().toISOString().split('T')[0];
+        return state.dates[parseInt(slider.value)] || state.dates[state.dates.length - 1];
+    }
+
+    slider.addEventListener('input', () => { updateLabel(); refreshFn(); });
+    prevBtn?.addEventListener('click', () => { slider.value = Math.max(0, parseInt(slider.value) - 1); updateLabel(); refreshFn(); });
+    nextBtn?.addEventListener('click', () => { slider.value = Math.min(parseInt(slider.max), parseInt(slider.value) + 1); updateLabel(); refreshFn(); });
+    todayBtn?.addEventListener('click', () => { slider.value = state.dates.length - 1; updateLabel(); refreshFn(); });
+    modeSelect?.addEventListener('change', () => { rebuild(); refreshFn(); });
+    sessionBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            sessionBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.session = btn.dataset.session;
+            refreshFn();
+        });
+    });
+
+    rebuild();
+    return { getDate, getSession: () => state.session };
 }
 
 function initDateSlider() {
@@ -922,9 +974,9 @@ function initDateSlider() {
         refreshDashboard();
     });
 
-    document.querySelectorAll('.dash-session-btn').forEach(btn => {
+    document.querySelectorAll('#tab-dashboard .dash-session-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('.dash-session-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#tab-dashboard .dash-session-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             _sliderSession = btn.dataset.session;
             refreshDashboard();
@@ -999,7 +1051,7 @@ async function loadDashboard() {
 
     const filterParams = getDashFilterParams();
     let url = `/headcount?date=${selectedDate}` + (filterParams ? '&' + filterParams : '');
-    let su = '/stats' + (filterParams ? '?' + filterParams : '');
+    let su = `/stats?date=${selectedDate}` + (filterParams ? '&' + filterParams : '');
 
     const [hc, stats] = await Promise.all([api(url), api(su)]);
     if (!stats.total_employees && stats.total_employees !== 0) return;
@@ -1048,11 +1100,24 @@ async function loadContractors() {
     dc.value = cur;
 }
 
+function getWorkforceFilterParams() {
+    const parts = [];
+    const div = $('#wf-division')?.value;
+    const area = $('#wf-filter-area')?.value;
+    const proj = $('#wf-project')?.value;
+    const ctr = $('#wf-contractor')?.value;
+    if (proj) parts.push(`project_id=${proj}`);
+    else if (area) parts.push(`area_id=${area}`);
+    else if (div) parts.push(`division_id=${div}`);
+    if (ctr) parts.push(`subcontractor=${encodeURIComponent(ctr)}`);
+    return parts.join('&');
+}
+
 async function loadWorkerList() {
     const wrap = $('#worker-list');
     if (!wrap) return;
     wrap.innerHTML = '<div class="spinner"></div>';
-    const params = getDashFilterParams();
+    const params = getWorkforceFilterParams();
     let url = '/employees' + (params ? '?' + params : '');
     const data = await api(url);
     if (!Array.isArray(data)) { wrap.innerHTML = '<div class="empty-state">No workers</div>'; _dashWorkers = []; return; }
@@ -1654,31 +1719,40 @@ async function initTrends() {
     if (_trendsInited) return;
     _trendsInited = true;
 
-    // Populate division filter
-    const td = $('#trend-division');
-    const divs = await api('/divisions');
+    const td = $('#trend-division'), ta = $('#trend-area'), tp = $('#trend-project'), tc = $('#trend-contractor');
+    const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
     if (Array.isArray(divs)) td.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    if (Array.isArray(allAreas)) ta.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}" data-name="${esc(a.name)}">${esc(a.name)}</option>`).join('');
 
     td.addEventListener('change', async () => {
-        const ta = $('#trend-area'), tc = $('#trend-contractor');
         ta.innerHTML = '<option value="">All Areas</option>';
+        tp.innerHTML = '<option value="">All Projects</option>';
         tc.innerHTML = '<option value="">All Contractors</option>';
         if (td.value) {
             const areas = await api(`/areas?division_id=${td.value}`);
             if (Array.isArray(areas)) ta.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}" data-name="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+            const projs = await api(`/projects?division_id=${td.value}`);
+            if (Array.isArray(projs)) tp.innerHTML = '<option value="">All Projects</option>' + projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+        } else if (Array.isArray(allAreas)) {
+            ta.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}" data-name="${esc(a.name)}">${esc(a.name)}</option>`).join('');
         }
         loadTrends();
     });
-    $('#trend-area')?.addEventListener('change', async () => {
-        const tc = $('#trend-contractor');
+    ta?.addEventListener('change', async () => {
         tc.innerHTML = '<option value="">All Contractors</option>';
+        tp.innerHTML = '<option value="">All Projects</option>';
+        if (ta.value) await loadProjects(tp, true, ta.value, null);
         const params = getTrendFilterParams();
         const ctrs = await api('/contractors' + (params ? '?' + params : ''));
         if (Array.isArray(ctrs)) tc.innerHTML = '<option value="">All Contractors</option>' + ctrs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
         loadTrends();
     });
+    tp?.addEventListener('change', loadTrends);
+    tc?.addEventListener('change', loadTrends);
 
-    const changeEls = ['trend-contractor', 'trend-session', 'trend-designation', 'trend-nationality', 'trend-days', 'trend-dummy'];
+    _tabSliders.trends = initTabSlider($('#trend-date-slider'), loadTrends);
+
+    const changeEls = ['trend-designation', 'trend-nationality'];
     changeEls.forEach(id => $('#' + id)?.addEventListener('change', loadTrends));
     await loadTrends();
 }
@@ -1687,8 +1761,10 @@ function getTrendFilterParams() {
     const parts = [];
     const div = $('#trend-division')?.value;
     const area = $('#trend-area')?.value;
+    const proj = $('#trend-project')?.value;
     const ctr = $('#trend-contractor')?.value;
-    if (area) parts.push(`area_id=${area}`);
+    if (proj) parts.push(`project_id=${proj}`);
+    else if (area) parts.push(`area_id=${area}`);
     else if (div) parts.push(`division_id=${div}`);
     if (ctr) parts.push(`subcontractor=${encodeURIComponent(ctr)}`);
     return parts.join('&');
@@ -1721,25 +1797,19 @@ function generateDummyTrend(numDays) {
 }
 
 async function loadTrends() {
-    const isDummy = $('#trend-dummy')?.checked;
-    const numDays = parseInt($('#trend-days').value) || 30;
-    let data;
-
-    if (isDummy) {
-        data = generateDummyTrend(numDays);
-    } else {
-        const params = new URLSearchParams();
-        const fp = getTrendFilterParams();
-        if (fp) fp.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
-        const sess = $('#trend-session').value;
-        const desig = $('#trend-designation').value;
-        const nat = $('#trend-nationality').value;
-        if (sess) params.set('session', sess);
-        if (desig) params.set('designation', desig);
-        if (nat) params.set('nationality', nat);
-        params.set('days', numDays);
-        data = await api('/trends?' + params.toString());
-    }
+    const ts = _tabSliders.trends;
+    const numDays = 30;
+    const params = new URLSearchParams();
+    const fp = getTrendFilterParams();
+    if (fp) fp.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
+    const sess = ts ? (ts.getSession() === 'PM' ? 'EV' : 'AM') : 'AM';
+    const desig = $('#trend-designation')?.value;
+    const nat = $('#trend-nationality')?.value;
+    if (sess) params.set('session', sess);
+    if (desig) params.set('designation', desig);
+    if (nat) params.set('nationality', nat);
+    params.set('days', numDays);
+    const data = await api('/trends?' + params.toString());
     if (!data || !data.labels) return;
 
     const dSel = $('#trend-designation'), nSel = $('#trend-nationality');
@@ -1978,30 +2048,39 @@ async function initHealthTrends() {
     if (_healthInited) return;
     _healthInited = true;
 
-    const hd = $('#ht-division');
-    const divs = await api('/divisions');
+    const hd = $('#ht-division'), ha = $('#ht-area'), hp = $('#ht-project'), hc = $('#ht-contractor');
+    const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
     if (Array.isArray(divs)) hd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    if (Array.isArray(allAreas)) ha.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
 
     hd.addEventListener('change', async () => {
-        const ha = $('#ht-area'), hc = $('#ht-contractor');
         ha.innerHTML = '<option value="">All Areas</option>';
+        hp.innerHTML = '<option value="">All Projects</option>';
         hc.innerHTML = '<option value="">All Contractors</option>';
         if (hd.value) {
             const areas = await api(`/areas?division_id=${hd.value}`);
             if (Array.isArray(areas)) ha.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+            const projs = await api(`/projects?division_id=${hd.value}`);
+            if (Array.isArray(projs)) hp.innerHTML = '<option value="">All Projects</option>' + projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+        } else if (Array.isArray(allAreas)) {
+            ha.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         }
         loadHealthTrends();
     });
-    $('#ht-area')?.addEventListener('change', async () => {
-        const hc = $('#ht-contractor');
+    ha?.addEventListener('change', async () => {
         hc.innerHTML = '<option value="">All Contractors</option>';
+        hp.innerHTML = '<option value="">All Projects</option>';
+        if (ha.value) await loadProjects(hp, true, ha.value, null);
         const p = getHTFilterParams();
         const ctrs = await api('/contractors' + (p ? '?' + p : ''));
         if (Array.isArray(ctrs)) hc.innerHTML = '<option value="">All Contractors</option>' + ctrs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
         loadHealthTrends();
     });
-    $('#ht-contractor')?.addEventListener('change', loadHealthTrends);
-    $('#ht-dummy')?.addEventListener('change', loadHealthTrends);
+    hp?.addEventListener('change', loadHealthTrends);
+    hc?.addEventListener('change', loadHealthTrends);
+
+    _tabSliders.health = initTabSlider($('#ht-date-slider'), loadHealthTrends);
+
     await loadHealthTrends();
 }
 
@@ -2009,8 +2088,10 @@ function getHTFilterParams() {
     const parts = [];
     const div = $('#ht-division')?.value;
     const area = $('#ht-area')?.value;
+    const proj = $('#ht-project')?.value;
     const ctr = $('#ht-contractor')?.value;
-    if (area) parts.push(`area_id=${area}`);
+    if (proj) parts.push(`project_id=${proj}`);
+    else if (area) parts.push(`area_id=${area}`);
     else if (div) parts.push(`division_id=${div}`);
     if (ctr) parts.push(`subcontractor=${encodeURIComponent(ctr)}`);
     return parts.join('&');
@@ -2067,14 +2148,8 @@ function riskLevel(person) {
 }
 
 async function loadHealthTrends() {
-    const isDummy = $('#ht-dummy')?.checked;
-    let data;
-    if (isDummy) {
-        data = generateDemoHealth();
-    } else {
-        const p = getHTFilterParams();
-        data = await api('/health-trends' + (p ? '?' + p : ''));
-    }
+    const p = getHTFilterParams();
+    const data = await api('/health-trends' + (p ? '?' + p : ''));
     if (!data) return;
     renderHealthOverview(data);
     renderMedicalSection(data);
@@ -2773,9 +2848,26 @@ function initTabs() {
 async function initWorkforceTab() {
     if (!_workforceInited) {
         _workforceInited = true;
+
+        const wfDiv = $('#wf-division'), wfArea2 = $('#wf-filter-area'), wfProj = $('#wf-project'), wfCtr = $('#wf-contractor');
+        const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
+        if (wfDiv && Array.isArray(divs)) wfDiv.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        if (wfArea2 && Array.isArray(allAreas)) wfArea2.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+
+        wfDiv?.addEventListener('change', async () => {
+            if (wfArea2) { wfArea2.innerHTML = '<option value="">All Areas</option>'; if (wfDiv.value) { const a2 = await api(`/areas?division_id=${wfDiv.value}`); if (Array.isArray(a2)) wfArea2.innerHTML = '<option value="">All Areas</option>' + a2.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); } else if (Array.isArray(allAreas)) { wfArea2.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join(''); } }
+            if (wfProj) wfProj.innerHTML = '<option value="">All Projects</option>';
+            if (wfCtr) wfCtr.innerHTML = '<option value="">All Contractors</option>';
+            loadWorkerList();
+        });
+        wfArea2?.addEventListener('change', async () => {
+            if (wfProj) { wfProj.innerHTML = '<option value="">All Projects</option>'; if (wfArea2.value) await loadProjects(wfProj, true, wfArea2.value, null); }
+            loadWorkerList();
+        });
+        wfProj?.addEventListener('change', loadWorkerList);
+        wfCtr?.addEventListener('change', loadWorkerList);
+
         const wfArea = $('#wf-area');
-        const divs = await api('/divisions');
-        const allAreas = await api('/areas');
         if (wfArea && Array.isArray(allAreas)) {
             wfArea.innerHTML = '<option value="">Select Area</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         }
@@ -2816,9 +2908,10 @@ async function initTWLTab() {
         const twlArea = $('#twl-area');
         const twlFilterDiv = $('#twl-filter-division');
         const twlFilterArea = $('#twl-filter-area');
+        const twlFilterProj = $('#twl-filter-project');
+        const twlFilterCtr = $('#twl-filter-contractor');
 
-        const divs = await api('/divisions');
-        const allAreas = await api('/areas');
+        const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
         if (twlArea && Array.isArray(allAreas)) {
             twlArea.innerHTML = '<option value="">Select Area</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         }
@@ -2831,14 +2924,25 @@ async function initTWLTab() {
 
         twlFilterDiv?.addEventListener('change', async () => {
             twlFilterArea.innerHTML = '<option value="">All Areas</option>';
+            if (twlFilterProj) twlFilterProj.innerHTML = '<option value="">All Projects</option>';
+            if (twlFilterCtr) twlFilterCtr.innerHTML = '<option value="">All Contractors</option>';
             if (twlFilterDiv.value) {
                 const areas = await api(`/areas?division_id=${twlFilterDiv.value}`);
                 if (Array.isArray(areas)) twlFilterArea.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
             }
             loadTWLData();
         });
-        twlFilterArea?.addEventListener('change', loadTWLData);
-        $('#twl-filter-days')?.addEventListener('change', loadTWLData);
+        twlFilterArea?.addEventListener('change', async () => {
+            if (twlFilterProj) {
+                twlFilterProj.innerHTML = '<option value="">All Projects</option>';
+                if (twlFilterArea.value) await loadProjects(twlFilterProj, true, twlFilterArea.value, null);
+            }
+            loadTWLData();
+        });
+        twlFilterProj?.addEventListener('change', loadTWLData);
+        twlFilterCtr?.addEventListener('change', loadTWLData);
+
+        _tabSliders.twl = initTabSlider($('#twl-date-slider'), loadTWLData);
 
         $('#btn-twl-submit')?.addEventListener('click', submitTWLReading);
     }
@@ -2881,8 +2985,7 @@ async function submitTWLReading() {
 async function loadTWLData() {
     const area = $('#twl-filter-area')?.value;
     const division = $('#twl-filter-division')?.value;
-    const days = $('#twl-filter-days')?.value || '30';
-    let qp = `days=${days}`;
+    let qp = `days=60`;
     if (area) qp += `&area_id=${area}`;
     else if (division) qp += `&division_id=${division}`;
 
@@ -3076,9 +3179,35 @@ async function initOITab() {
         });
 
         const oiFilterDiv = $('#oi-filter-division');
+        const oiFilterArea2 = $('#oi-filter-area');
+        const oiFilterProj2 = $('#oi-filter-project');
+        const oiFilterCtr = $('#oi-filter-contractor');
         if (oiFilterDiv && Array.isArray(divs)) oiFilterDiv.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-        oiFilterDiv?.addEventListener('change', loadOIData);
-        $('#oi-filter-days')?.addEventListener('change', loadOIData);
+        if (oiFilterArea2 && Array.isArray(areas)) oiFilterArea2.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+
+        oiFilterDiv?.addEventListener('change', async () => {
+            if (oiFilterArea2) {
+                oiFilterArea2.innerHTML = '<option value="">All Areas</option>';
+                if (oiFilterDiv.value) {
+                    const a2 = await api(`/areas?division_id=${oiFilterDiv.value}`);
+                    if (Array.isArray(a2)) oiFilterArea2.innerHTML = '<option value="">All Areas</option>' + a2.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+                }
+            }
+            if (oiFilterProj2) oiFilterProj2.innerHTML = '<option value="">All Projects</option>';
+            if (oiFilterCtr) oiFilterCtr.innerHTML = '<option value="">All Contractors</option>';
+            loadOIData();
+        });
+        oiFilterArea2?.addEventListener('change', async () => {
+            if (oiFilterProj2) {
+                oiFilterProj2.innerHTML = '<option value="">All Projects</option>';
+                if (oiFilterArea2.value) await loadProjects(oiFilterProj2, true, oiFilterArea2.value, null);
+            }
+            loadOIData();
+        });
+        oiFilterProj2?.addEventListener('change', loadOIData);
+        oiFilterCtr?.addEventListener('change', loadOIData);
+
+        _tabSliders.oi = initTabSlider($('#oi-date-slider'), loadOIData);
 
         $('#oi-date').value = new Date().toISOString().split('T')[0];
         $('#oi-entry-form')?.addEventListener('submit', submitObservation);
@@ -3119,9 +3248,12 @@ async function submitObservation(e) {
 
 async function loadOIData() {
     const division = $('#oi-filter-division')?.value;
-    const days = $('#oi-filter-days')?.value || '30';
-    let qp = `days=${days}`;
-    if (division) qp += `&division_id=${division}`;
+    const area = $('#oi-filter-area')?.value;
+    const project = $('#oi-filter-project')?.value;
+    let qp = `days=60`;
+    if (project) qp += `&project_id=${project}`;
+    else if (area) qp += `&area_id=${area}`;
+    else if (division) qp += `&division_id=${division}`;
 
     const [summary, readings] = await Promise.all([
         api('/observations/summary?' + qp),

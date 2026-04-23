@@ -374,6 +374,12 @@
 
         <!-- Workforce Tab (Workers, Imports, QR, Exports) -->
         <div id="tab-workforce" class="tab-content">
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
+                <select id="wf-division" class="input"><option value="">All Divisions</option></select>
+                <select id="wf-filter-area" class="input"><option value="">All Areas</option></select>
+                <select id="wf-project" class="input"><option value="">All Projects</option></select>
+                <select id="wf-contractor" class="input"><option value="">All Contractors</option></select>
+            </div>
             <!-- Import Section -->
             <div class="section dash-upload-section">
                 <div class="section-header">
@@ -453,23 +459,33 @@
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
                 <select id="trend-division" class="input"><option value="">All Divisions</option></select>
                 <select id="trend-area" class="input"><option value="">All Areas</option></select>
+                <select id="trend-project" class="input"><option value="">All Projects</option></select>
                 <select id="trend-contractor" class="input"><option value="">All Contractors</option></select>
             </div>
+            <div class="dash-date-slider" id="trend-date-slider">
+                <div class="dash-slider-controls">
+                    <button class="dash-slider-btn tab-slider-prev" title="Previous">&lsaquo;</button>
+                    <div class="dash-slider-track-wrap">
+                        <input type="range" class="dash-slider-range tab-slider-range" min="0" max="30" value="30">
+                        <div class="dash-slider-date-label tab-slider-label"></div>
+                    </div>
+                    <button class="dash-slider-btn tab-slider-next" title="Next">&rsaquo;</button>
+                </div>
+                <div class="dash-slider-meta">
+                    <select class="input dash-slider-mode-sel tab-slider-mode">
+                        <option value="day">Daily</option>
+                        <option value="week">Weekly</option>
+                    </select>
+                    <div class="dash-slider-session-toggle">
+                        <button class="dash-session-btn tab-session-btn active" data-session="AM">AM</button>
+                        <button class="dash-session-btn tab-session-btn" data-session="PM">PM</button>
+                    </div>
+                    <button class="btn btn-sm tab-slider-today" style="padding:4px 12px;font-size:0.75rem">Today</button>
+                </div>
+            </div>
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px">
-                <select id="trend-session" class="input" style="max-width:110px">
-                    <option value="AM">9 AM</option>
-                    <option value="EV">7 PM</option>
-                </select>
                 <select id="trend-designation" class="input"><option value="">All Designations</option></select>
                 <select id="trend-nationality" class="input"><option value="">All Nationalities</option></select>
-                <select id="trend-days" class="input" style="max-width:120px">
-                    <option value="7">Last 7 days</option>
-                    <option value="14">Last 14 days</option>
-                    <option value="30" selected>Last 30 days</option>
-                </select>
-                <label class="dummy-toggle" title="Show sample data to preview the chart">
-                    <input type="checkbox" id="trend-dummy"> Demo
-                </label>
             </div>
             <div id="trend-insights" class="stats-grid" style="margin-top:16px"></div>
             <div class="section">
@@ -495,10 +511,29 @@
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
                 <select id="ht-division" class="input"><option value="">All Divisions</option></select>
                 <select id="ht-area" class="input"><option value="">All Areas</option></select>
+                <select id="ht-project" class="input"><option value="">All Projects</option></select>
                 <select id="ht-contractor" class="input"><option value="">All Contractors</option></select>
-                <label class="dummy-toggle" title="Show sample data to preview the dashboard">
-                    <input type="checkbox" id="ht-dummy"> Demo
-                </label>
+            </div>
+            <div class="dash-date-slider" id="ht-date-slider">
+                <div class="dash-slider-controls">
+                    <button class="dash-slider-btn tab-slider-prev" title="Previous">&lsaquo;</button>
+                    <div class="dash-slider-track-wrap">
+                        <input type="range" class="dash-slider-range tab-slider-range" min="0" max="30" value="30">
+                        <div class="dash-slider-date-label tab-slider-label"></div>
+                    </div>
+                    <button class="dash-slider-btn tab-slider-next" title="Next">&rsaquo;</button>
+                </div>
+                <div class="dash-slider-meta">
+                    <select class="input dash-slider-mode-sel tab-slider-mode">
+                        <option value="day">Daily</option>
+                        <option value="week">Weekly</option>
+                    </select>
+                    <div class="dash-slider-session-toggle">
+                        <button class="dash-session-btn tab-session-btn active" data-session="AM">AM</button>
+                        <button class="dash-session-btn tab-session-btn" data-session="PM">PM</button>
+                    </div>
+                    <button class="btn btn-sm tab-slider-today" style="padding:4px 12px;font-size:0.75rem">Today</button>
+                </div>
             </div>
             <div id="ht-risk-overview" class="stats-grid" style="margin-top:12px"></div>
             <div class="section">
@@ -584,12 +619,29 @@
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px">
                 <select id="twl-filter-division" class="input"><option value="">All Divisions</option></select>
                 <select id="twl-filter-area" class="input"><option value="">All Areas</option></select>
-                <select id="twl-filter-days" class="input" style="max-width:130px">
-                    <option value="7">Last 7 days</option>
-                    <option value="14">Last 14 days</option>
-                    <option value="30" selected>Last 30 days</option>
-                    <option value="90">Last 90 days</option>
-                </select>
+                <select id="twl-filter-project" class="input"><option value="">All Projects</option></select>
+                <select id="twl-filter-contractor" class="input"><option value="">All Contractors</option></select>
+            </div>
+            <div class="dash-date-slider" id="twl-date-slider">
+                <div class="dash-slider-controls">
+                    <button class="dash-slider-btn tab-slider-prev" title="Previous">&lsaquo;</button>
+                    <div class="dash-slider-track-wrap">
+                        <input type="range" class="dash-slider-range tab-slider-range" min="0" max="30" value="30">
+                        <div class="dash-slider-date-label tab-slider-label"></div>
+                    </div>
+                    <button class="dash-slider-btn tab-slider-next" title="Next">&rsaquo;</button>
+                </div>
+                <div class="dash-slider-meta">
+                    <select class="input dash-slider-mode-sel tab-slider-mode">
+                        <option value="day">Daily</option>
+                        <option value="week">Weekly</option>
+                    </select>
+                    <div class="dash-slider-session-toggle">
+                        <button class="dash-session-btn tab-session-btn active" data-session="AM">AM</button>
+                        <button class="dash-session-btn tab-session-btn" data-session="PM">PM</button>
+                    </div>
+                    <button class="btn btn-sm tab-slider-today" style="padding:4px 12px;font-size:0.75rem">Today</button>
+                </div>
             </div>
 
             <!-- TWL Analytics -->
@@ -641,14 +693,32 @@
             </div>
 
             <!-- O&I Filters -->
-            <div class="dash-filter-bar" style="margin-top:16px">
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-top:16px">
                 <select id="oi-filter-division" class="input"><option value="">All Divisions</option></select>
-                <select id="oi-filter-days" class="input" style="max-width:130px">
-                    <option value="7">Last 7 days</option>
-                    <option value="14">Last 14 days</option>
-                    <option value="30" selected>Last 30 days</option>
-                    <option value="90">Last 90 days</option>
-                </select>
+                <select id="oi-filter-area" class="input"><option value="">All Areas</option></select>
+                <select id="oi-filter-project" class="input"><option value="">All Projects</option></select>
+                <select id="oi-filter-contractor" class="input"><option value="">All Contractors</option></select>
+            </div>
+            <div class="dash-date-slider" id="oi-date-slider">
+                <div class="dash-slider-controls">
+                    <button class="dash-slider-btn tab-slider-prev" title="Previous">&lsaquo;</button>
+                    <div class="dash-slider-track-wrap">
+                        <input type="range" class="dash-slider-range tab-slider-range" min="0" max="30" value="30">
+                        <div class="dash-slider-date-label tab-slider-label"></div>
+                    </div>
+                    <button class="dash-slider-btn tab-slider-next" title="Next">&rsaquo;</button>
+                </div>
+                <div class="dash-slider-meta">
+                    <select class="input dash-slider-mode-sel tab-slider-mode">
+                        <option value="day">Daily</option>
+                        <option value="week">Weekly</option>
+                    </select>
+                    <div class="dash-slider-session-toggle">
+                        <button class="dash-session-btn tab-session-btn active" data-session="AM">AM</button>
+                        <button class="dash-session-btn tab-session-btn" data-session="PM">PM</button>
+                    </div>
+                    <button class="btn btn-sm tab-slider-today" style="padding:4px 12px;font-size:0.75rem">Today</button>
+                </div>
             </div>
 
             <!-- O&I Summary -->

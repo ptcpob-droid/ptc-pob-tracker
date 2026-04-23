@@ -139,7 +139,11 @@ if USE_POSTGRES:
         )
         sql = sql.replace("datetime('now')", "NOW()")
         sql = sql.replace('?', '%s')
-        sql = re.sub(r'INSERT OR (?:REPLACE|IGNORE) INTO', 'INSERT INTO', sql)
+        sql = re.sub(r'INSERT OR REPLACE INTO', 'INSERT INTO', sql)
+        if 'INSERT OR IGNORE INTO' in sql:
+            sql = sql.replace('INSERT OR IGNORE INTO', 'INSERT INTO')
+            if 'ON CONFLICT' not in sql:
+                sql = re.sub(r'(VALUES\s*\([^)]+\))', r'\1 ON CONFLICT DO NOTHING', sql)
         return sql
 
     def db_execute(conn, sql, params=None):
@@ -557,6 +561,11 @@ def init_db():
         # ── Anonymize worker data (one-time migration for demo/POC) ──
         _anonymize_workers(conn)
 
+        # ── Seed demo attendance + O&I if tables are empty ──
+        _seed_demo_attendance(conn)
+        _seed_demo_observations(conn)
+        _seed_demo_twl(conn)
+
     finally:
         conn.close()
 
@@ -733,6 +742,306 @@ def _anonymize_workers(conn):
             conn.rollback()
         except Exception:
             pass
+
+
+def _seed_demo_attendance(conn):
+    """Generate 60 days of realistic attendance data for all active employees."""
+    import random as _rnd
+    from datetime import date as _date, timedelta as _td
+    _rnd.seed(99)
+
+    existing = db_fetchone(conn, "SELECT COUNT(*) as c FROM attendance")
+    cnt = existing['c'] if isinstance(existing, dict) else existing[0]
+    if cnt > 100:
+        print(f'  Attendance already seeded ({cnt} rows), skipping.')
+        return
+
+    employees = db_fetchall(conn, """
+        SELECT e.id, e.employee_no, e.project_id, p.area_id
+        FROM employees e JOIN projects p ON p.id = e.project_id
+        WHERE e.active = 1
+    """)
+    if not employees:
+        print('  No active employees for attendance seed.')
+        return
+
+    sites_map = {}
+    sites = db_fetchall(conn, "SELECT id, project_id FROM sites")
+    for s in sites:
+        pid = s['project_id'] if isinstance(s, dict) else s[1]
+        sid = s['id'] if isinstance(s, dict) else s[0]
+        sites_map.setdefault(pid, []).append(sid)
+
+    project_ids = set()
+    for emp in employees:
+        pid = emp['project_id'] if isinstance(emp, dict) else emp[2]
+        project_ids.add(pid)
+    for pid in project_ids:
+        if pid not in sites_map:
+            try:
+                db_execute(conn, "INSERT INTO sites (name, project_id) VALUES (?, ?)", ('Main Site', pid))
+            except Exception:
+                pass
+    conn.commit()
+    sites = db_fetchall(conn, "SELECT id, project_id FROM sites")
+    sites_map = {}
+    for s in sites:
+        pid = s['project_id'] if isinstance(s, dict) else s[1]
+        sid = s['id'] if isinstance(s, dict) else s[0]
+        sites_map.setdefault(pid, []).append(sid)
+
+    today = _date.today()
+    days = 60
+    sessions = ['AM', 'EV']
+    batch = []
+    batch_size = 500
+
+    for day_offset in range(days):
+        d = today - _td(days=day_offset)
+        if d.weekday() >= 5:
+            continue
+        ds = d.isoformat()
+
+        for sess in sessions:
+            am_rate = _rnd.uniform(0.70, 0.92)
+            ev_rate = am_rate * _rnd.uniform(0.85, 0.98) if sess == 'EV' else am_rate
+
+            rate = am_rate if sess == 'AM' else ev_rate
+            for emp in employees:
+                if _rnd.random() > rate:
+                    continue
+                eid = emp['id'] if isinstance(emp, dict) else emp[0]
+                eno = emp['employee_no'] if isinstance(emp, dict) else emp[1]
+                pid = emp['project_id'] if isinstance(emp, dict) else emp[2]
+                site_list = sites_map.get(pid, list(sites_map.values())[0] if sites_map else [1])
+                sid = _rnd.choice(site_list)
+
+                batch.append((eid, eno, pid, sid, ds, sess))
+
+                if len(batch) >= batch_size:
+                    _flush_attendance_batch(conn, batch)
+                    batch = []
+
+    if batch:
+        _flush_attendance_batch(conn, batch)
+
+    final = db_fetchone(conn, "SELECT COUNT(*) as c FROM attendance")
+    fc = final['c'] if isinstance(final, dict) else final[0]
+    print(f'  Seeded {fc} attendance records over {days} weekdays')
+
+
+def _flush_attendance_batch(conn, batch):
+    for (eid, eno, pid, sid, ds, sess) in batch:
+        try:
+            db_execute(conn, """INSERT OR IGNORE INTO attendance
+                (employee_id, employee_no, project_id, site_id, scan_date, session)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (eid, eno, pid, sid, ds, sess))
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    try:
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _seed_demo_observations(conn):
+    """Generate 60 days of O&I observations linked to real project/area/division structure."""
+    import random as _rnd
+    from datetime import date as _date, timedelta as _td
+    _rnd.seed(77)
+
+    existing = db_fetchone(conn, "SELECT COUNT(*) as c FROM observations")
+    cnt = existing['c'] if isinstance(existing, dict) else existing[0]
+    if cnt > 20:
+        print(f'  Observations already seeded ({cnt} rows), skipping.')
+        return
+
+    projects = db_fetchall(conn, """
+        SELECT p.id, p.area_id, a.division_id, p.contractor_company
+        FROM projects p
+        JOIN areas a ON a.id = p.area_id
+        WHERE p.active = 1
+    """)
+    if not projects:
+        print('  No projects for observation seed.')
+        return
+
+    employees = db_fetchall(conn, """
+        SELECT e.name, e.designation, e.discipline, p.contractor_company
+        FROM employees e JOIN projects p ON p.id = e.project_id
+        WHERE e.active = 1
+    """)
+
+    groups = ['Safe Act', 'Safe Condition', 'Unsafe Act', 'Unsafe Condition', 'Near Miss', 'HIPO']
+    group_weights = [30, 25, 20, 15, 7, 3]
+    types_list = [
+        'Hot Work', 'Safety Devices or Guards', 'Procedures',
+        'Personal Protective Equipment', 'Tools Equipment', 'Lifting',
+        'Health, Hygiene, Food or Water', 'Safety Signage and Demarcation',
+        'Emergency Response', 'Housekeeping', 'Driving/Vehicles',
+        'Excavation', 'Line of Fire or Pinch Points', 'Working at Height',
+        'Scaffolding', 'Confined Space', 'Electrical',
+        'Environmental', 'Material Handling', 'General Observation'
+    ]
+    severity_unsafe = ['Low', 'Medium', 'High', 'Critical']
+    severity_w = [40, 35, 20, 5]
+    risk_unsafe = ['Low', 'Medium', 'High']
+    risk_w = [40, 40, 20]
+    emp_types = ['AON Direct Hire', 'PMC', 'Contractor']
+
+    outcomes = ['Corrected on site', 'Reported to supervisor', 'Work stopped',
+                'Immediate rectification', 'Follow-up required', 'Training recommended',
+                'Good practice acknowledged', 'Toolbox talk conducted']
+    interventions = ['Verbal warning', 'Counseling', 'Re-training', 'Stand-down',
+                     'Recognition', 'Positive feedback', 'Safety brief', 'None required']
+
+    today = _date.today()
+    count = 0
+
+    for day_offset in range(60):
+        d = today - _td(days=day_offset)
+        if d.weekday() >= 5:
+            continue
+        ds = d.isoformat()
+        n_obs = _rnd.randint(3, 15)
+
+        for _ in range(n_obs):
+            proj = _rnd.choice(projects)
+            pid = proj['id'] if isinstance(proj, dict) else proj[0]
+            aid = proj['area_id'] if isinstance(proj, dict) else proj[1]
+            did = proj['division_id'] if isinstance(proj, dict) else proj[2]
+
+            grp = _rnd.choices(groups, weights=group_weights, k=1)[0]
+            is_safe = grp.startswith('Safe')
+
+            sev = 'N/A' if is_safe else _rnd.choices(severity_unsafe, weights=severity_w, k=1)[0]
+            risk = 'N/A' if is_safe else _rnd.choices(risk_unsafe, weights=risk_w, k=1)[0]
+
+            observer = _rnd.choice(employees) if employees else None
+            obs_name = (observer['name'] if isinstance(observer, dict) else observer[0]) if observer else 'Site Inspector'
+            obs_desg = (observer['designation'] if isinstance(observer, dict) else observer[1]) if observer else 'HSE Officer'
+            obs_disc = (observer['discipline'] if isinstance(observer, dict) else observer[2]) if observer else 'Safety'
+            obs_comp = (observer['contractor_company'] if isinstance(observer, dict) else observer[3]) if observer else 'Main Contractor'
+
+            try:
+                db_execute(conn, """INSERT INTO observations
+                    (division_id, area_id, project_id, observation_date,
+                     observer_name, observer_designation, observer_discipline, observer_company,
+                     employee_type, observation_group, observation_type, potential_severity,
+                     risk_rating, observation_text, corrective_action, intervention, outcome, remarks)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (did, aid, pid, ds,
+                     obs_name, obs_desg, obs_disc, obs_comp,
+                     _rnd.choice(emp_types), grp, _rnd.choice(types_list), sev,
+                     risk,
+                     f"{grp} observation during routine inspection",
+                     f"{'No action needed' if is_safe else 'Corrective action taken'}" if _rnd.random() > 0.3 else '',
+                     _rnd.choice(interventions),
+                     _rnd.choice(outcomes),
+                     '' if _rnd.random() > 0.2 else 'Noted during walkthrough'))
+                count += 1
+            except Exception:
+                pass
+
+    try:
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    print(f'  Seeded {count} O&I observations over 60 days')
+
+
+def _seed_demo_twl(conn):
+    """Generate 60 days of TWL readings across areas."""
+    import random as _rnd
+    from datetime import date as _date, timedelta as _td
+    _rnd.seed(55)
+
+    existing = db_fetchone(conn, "SELECT COUNT(*) as c FROM twl_readings")
+    cnt = existing['c'] if isinstance(existing, dict) else existing[0]
+    if cnt > 20:
+        print(f'  TWL already seeded ({cnt} rows), skipping.')
+        return
+
+    areas = db_fetchall(conn, "SELECT id FROM areas WHERE active = 1")
+    if not areas:
+        print('  No areas for TWL seed.')
+        return
+
+    sites_by_area = {}
+    for area in areas:
+        aid = area['id'] if isinstance(area, dict) else area[0]
+        s = db_fetchall(conn, """
+            SELECT s.id FROM sites s
+            JOIN projects p ON p.id = s.project_id
+            WHERE p.area_id = ?
+        """, (aid,))
+        if s:
+            sites_by_area[aid] = [x['id'] if isinstance(x, dict) else x[0] for x in s]
+
+    work_types = ['light', 'moderate', 'heavy']
+    today = _date.today()
+    count = 0
+
+    def _zone(v):
+        if v >= 32: return 'low'
+        if v >= 28: return 'medium'
+        if v >= 25: return 'high'
+        return 'extreme'
+
+    for day_offset in range(60):
+        d = today - _td(days=day_offset)
+        if d.weekday() >= 5:
+            continue
+        ds = d.isoformat()
+
+        base_temp = _rnd.uniform(32, 48)
+        base_humidity = _rnd.uniform(30, 80)
+        base_wind = _rnd.uniform(0.5, 6)
+
+        for area in areas:
+            aid = area['id'] if isinstance(area, dict) else area[0]
+            sid_list = sites_by_area.get(aid)
+            sid = _rnd.choice(sid_list) if sid_list else None
+
+            for time_slot in ['06:00', '10:00', '14:00']:
+                temp = base_temp + _rnd.uniform(-3, 5) + (4 if '14:' in time_slot else 0)
+                hum = base_humidity + _rnd.uniform(-10, 10)
+                wind = base_wind + _rnd.uniform(-1, 2)
+                twl = _rnd.uniform(22, 36) - (0.15 * (temp - 35)) - (0.05 * (hum - 50))
+                twl = max(18, min(38, round(twl, 1)))
+                zone = _zone(twl)
+
+                try:
+                    db_execute(conn, """INSERT INTO twl_readings
+                        (area_id, site_id, reading_date, reading_time, twl_value, risk_zone,
+                         temperature, humidity, wind_speed, work_type, notes)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        (aid, sid, ds, time_slot, twl,
+                         zone, round(temp, 1), round(hum, 1), round(wind, 1),
+                         _rnd.choice(work_types),
+                         f"Routine {time_slot} reading"))
+                    count += 1
+                except Exception:
+                    pass
+
+    try:
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    print(f'  Seeded {count} TWL readings over 60 days')
 
 
 # Run init_db at import time so gunicorn/production picks it up
@@ -2098,10 +2407,9 @@ def api_stats():
     project_id = request.args.get('project_id')
     area_id = request.args.get('area_id', type=int)
     division_id = request.args.get('division_id', type=int)
+    target_date = request.args.get('date', date.today().isoformat())
     conn = get_db()
     try:
-        today = date.today().isoformat()
-
         eq = '''SELECT COUNT(*) as c FROM employees e
             LEFT JOIN projects p ON p.id = e.project_id
             LEFT JOIN areas ar ON ar.id = p.area_id
@@ -2123,7 +2431,7 @@ def api_stats():
                 LEFT JOIN projects p ON p.id = a.project_id
                 LEFT JOIN areas ar ON ar.id = p.area_id
                 WHERE a.scan_date = ? AND a.session = ?'''
-            params = [today, session_name]
+            params = [target_date, session_name]
             if project_id:
                 q += ' AND a.project_id = ?'
                 params.append(project_id)
@@ -2142,7 +2450,7 @@ def api_stats():
         total_projects = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects WHERE active = 1')['c']
     finally:
         conn.close()
-    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_ev': today_ev, 'total_projects': total_projects, 'date': today})
+    return jsonify({'total_employees': total_emp, 'today_am': today_am, 'today_ev': today_ev, 'total_projects': total_projects, 'date': target_date})
 
 
 @app.route('/api/trends')
