@@ -1486,7 +1486,18 @@ def health():
             users = row['c'] if isinstance(row, dict) else row[0]
             prow = db_fetchone(conn, 'SELECT COUNT(*) as c FROM projects')
             projects = prow['c'] if isinstance(prow, dict) else prow[0]
-            return jsonify({'status': 'ok', 'users': users, 'projects': projects, 'db': 'PostgreSQL' if DATABASE_URL else 'SQLite'})
+            dem_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE employee_no LIKE ?", ('DEM-%',))
+            dem = dem_row['c'] if isinstance(dem_row, dict) else dem_row[0]
+            total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees")
+            total_emp = total_row['c'] if isinstance(total_row, dict) else total_row[0]
+            sample = db_fetchone(conn, "SELECT employee_no, name FROM employees LIMIT 1")
+            sample_data = dict(sample) if sample else None
+            return jsonify({
+                'status': 'ok', 'users': users, 'projects': projects,
+                'db': 'PostgreSQL' if DATABASE_URL else 'SQLite',
+                'total_employees': total_emp, 'dem_employees': dem,
+                'sample': sample_data
+            })
         finally:
             conn.close()
     except Exception as e:
