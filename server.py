@@ -553,8 +553,122 @@ def init_db():
                 db_execute(conn, 'UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE id = ?', (new_secret, uid))
                 conn.commit()
                 print(f'  2FA set for user {uname}. Add to authenticator: {new_secret}')
+
+        # ── Anonymize worker data (one-time migration for demo/POC) ──
+        _anonymize_workers(conn)
+
     finally:
         conn.close()
+
+
+def _anonymize_workers(conn):
+    """Replace all employee personal data with dummy data. Runs once, skips if already done."""
+    import random as _rnd
+    _rnd.seed(42)
+
+    marker = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE employee_no LIKE 'DEM-%'")
+    already = marker['c'] if isinstance(marker, dict) else marker[0]
+    if already > 10:
+        return
+
+    total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE active = 1")
+    total = total_row['c'] if isinstance(total_row, dict) else total_row[0]
+    if total == 0:
+        return
+
+    print(f'  Anonymizing {total} employees...')
+
+    FIRST = {
+        'Indian': ['Rajesh','Suresh','Anil','Vikram','Sanjay','Mahesh','Deepak','Ravi','Amit','Ajay',
+                    'Pradeep','Manoj','Ramesh','Venkat','Ganesh','Ashok','Sunil','Naresh','Kamal','Mukesh'],
+        'Pakistani': ['Ali','Hassan','Usman','Bilal','Imran','Tariq','Faisal','Nadeem','Shahid','Kamran',
+                      'Waseem','Rizwan','Zafar','Irfan','Asif','Saleem','Arif','Khalid','Javed','Nasir'],
+        'Filipino': ['Jose','Juan','Mark','Joel','Ryan','Carlo','Angelo','Rodel','Noel','Dennis',
+                     'Ronald','Michael','Jason','Allan','Leo','Arnel','Gilbert','Rommel','Jayson','Elmer'],
+        'Bangladeshi': ['Mohammad','Abdul','Karim','Rahim','Hasan','Jamal','Fazlul','Mizanur','Shahidul','Rafiq',
+                        'Monir','Sohel','Liton','Rubel','Habib','Alamgir','Shafiq','Mostafa','Rashed','Zahid'],
+        'Egyptian': ['Ahmed','Mohamed','Mahmoud','Mostafa','Ibrahim','Khaled','Youssef','Omar','Tarek','Hesham',
+                     'Waleed','Essam','Sherif','Hany','Adel','Samir','Nabil','Gamal','Ashraf','Magdy'],
+        'Nepalese': ['Ram','Shyam','Hari','Bishnu','Krishna','Gopal','Dipak','Suman','Bikram','Prakash',
+                     'Binod','Santosh','Rajendra','Narayan','Bhim','Tek','Purna','Dhan','Keshav','Ganga'],
+    }
+    LAST = {
+        'Indian': ['Kumar','Singh','Sharma','Patel','Rao','Reddy','Nair','Pillai','Iyer','Gupta',
+                    'Verma','Mishra','Das','Jha','Yadav','Chauhan','Thakur','Pandey','Bose','Sinha'],
+        'Pakistani': ['Khan','Ahmed','Hussain','Malik','Iqbal','Butt','Chaudhry','Sheikh','Qureshi','Siddiqui',
+                      'Raza','Abbasi','Mirza','Bhatti','Aslam','Rehman','Naeem','Baig','Akram','Anwar'],
+        'Filipino': ['Santos','Reyes','Cruz','Garcia','Lopez','Torres','Ramos','Flores','Rivera','Gonzales',
+                     'Bautista','Aquino','Mendoza','Castillo','Villanueva','Dela Cruz','Navarro','Mercado','Pascual','Soriano'],
+        'Bangladeshi': ['Hossain','Islam','Rahman','Akter','Mia','Khatun','Uddin','Begum','Sarker','Ali',
+                        'Chowdhury','Siddique','Talukdar','Biswas','Bhuiyan','Kabir','Haque','Amin','Sultana','Khan'],
+        'Egyptian': ['El-Sayed','Hassan','Ali','Abdel-Fattah','Farouk','Mansour','Salah','Nasser','Osman','Ismail',
+                     'Darwish','Helmy','Saad','Attia','Ramadan','Soliman','Fouad','Moussa','Rizk','Shawky'],
+        'Nepalese': ['Gurung','Tamang','Rai','Magar','Thapa','Shrestha','Lama','Adhikari','Karki','Limbu',
+                     'Chhetri','Poudel','Bhandari','Khadka','Basnet','Bhattarai','Sapkota','Regmi','Subedi','Dahal'],
+    }
+    NATS = ['Indian','Pakistani','Filipino','Bangladeshi','Egyptian','Nepalese']
+    NAT_W = [35,20,15,15,10,5]
+    DESIGS = ['Welder','Pipefitter','Electrician','Rigger','Scaffolder','Mechanic','Painter','Insulator',
+              'Carpenter','Mason','Foreman','Technician','Safety Officer','Crane Operator',
+              'Instrument Technician','Supervisor','QC Inspector','Store Keeper','Driver','Helper','Fitter','Fabricator']
+    DISCS = ['Civil','Mechanical','Electrical','Piping','Instrumentation','HSE','Structural','Welding',
+             'Painting','Insulation','Scaffolding','QA/QC','Rigging','Operations','Logistics']
+    CAMPS = ['ICAD Worker Village','Musaffah Camp','Ruwais Housing Complex','Bu Hasa Camp','Habshan Camp',
+             'Asab Camp','Shah Gas Camp','Jebel Dhanna Camp','Bab Field Camp','NEB Worker Camp']
+    MED_RESULTS = ['Fit','Fit','Fit','Fit','Fit','Fit','UNFIT','Pending','']
+    CHRONIC = ['','','','','','','Diabetes','Hypertension','Cholesterol','Asthma','Back Pain (Chronic)','Nil','None']
+    CHRONIC_TR = ['','','Yes','Yes - Under Control','No','N/A']
+    FEELINGS = ['Good','Good','Good','Fine','Fine','Excellent','','Tired','OK']
+
+    def _rand_date(sy=1975, ey=2000):
+        from datetime import datetime as _dt, timedelta as _td
+        s = _dt(sy,1,1); d = (_dt(ey,12,31)-s).days
+        return (s + _td(days=_rnd.randint(0,d))).strftime('%Y-%m-%d')
+    def _rand_recent(m=24):
+        from datetime import datetime as _dt, timedelta as _td
+        return (_dt.now() - _td(days=_rnd.randint(0,m*30))).strftime('%Y-%m-%d')
+    def _rand_future(m=18):
+        from datetime import datetime as _dt, timedelta as _td
+        return (_dt.now() + _td(days=_rnd.randint(-60,m*30))).strftime('%Y-%m-%d')
+
+    rows = db_fetchall(conn, 'SELECT id FROM employees WHERE active = 1')
+    used = set()
+    for row in rows:
+        eid = row['id'] if isinstance(row, dict) else row[0]
+        nat = _rnd.choices(NATS, weights=NAT_W, k=1)[0]
+        name = f"{_rnd.choice(FIRST[nat])} {_rnd.choice(LAST[nat])}"
+        emp_no = f"DEM-{_rnd.randint(1000,9999)}"
+        while emp_no in used:
+            emp_no = f"DEM-{_rnd.randint(1000,9999)}"
+        used.add(emp_no)
+        dob = _rand_date()
+        chronic = _rnd.choice(CHRONIC)
+        ct = _rnd.choice(CHRONIC_TR) if chronic and chronic not in ('','Nil','None') else ''
+
+        db_execute(conn, '''UPDATE employees SET
+            name=?, nationality=?, dob=?, designation=?, discipline=?,
+            camp_name=?, employee_no=?, date_joining=?, date_deployment=?,
+            medical_date=?, last_medical_date=?, next_medical_due=?, medical_result=?,
+            chronic_condition=?, chronic_treated=?, general_feeling=?, eid_passport=?
+            WHERE id=?''',
+            (name, nat, dob, _rnd.choice(DESIGS), _rnd.choice(DISCS),
+             _rnd.choice(CAMPS), emp_no, _rand_recent(36), _rand_recent(24),
+             _rand_recent(12), _rand_recent(8), _rand_future(12), _rnd.choice(MED_RESULTS),
+             chronic, ct, _rnd.choice(FEELINGS),
+             f"784-{_rnd.randint(1950,2005)}-{_rnd.randint(1000000,9999999)}-{_rnd.randint(1,9)}",
+             eid))
+
+    # Update attendance records to match new employee_nos
+    att_rows = db_fetchall(conn, 'SELECT DISTINCT employee_id FROM attendance WHERE employee_id IS NOT NULL')
+    for ar in att_rows:
+        aid = ar['employee_id'] if isinstance(ar, dict) else ar[0]
+        emp = db_fetchone(conn, 'SELECT employee_no FROM employees WHERE id = ?', (aid,))
+        if emp:
+            new_no = emp['employee_no'] if isinstance(emp, dict) else emp[0]
+            db_execute(conn, 'UPDATE attendance SET employee_no = ? WHERE employee_id = ?', (new_no, aid))
+
+    conn.commit()
+    print(f'  Anonymized {len(rows)} employees with dummy data')
 
 
 # Run init_db at import time so gunicorn/production picks it up
