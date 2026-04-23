@@ -567,9 +567,18 @@ def _anonymize_workers(conn):
     from datetime import datetime as _dt, timedelta as _td
     _rnd.seed(42)
 
-    marker = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE employee_no LIKE 'DEM-%'")
-    already = marker['c'] if isinstance(marker, dict) else marker[0]
-    if already > 10:
+    try:
+        marker = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE employee_no LIKE ?", ('DEM-%',))
+        already = marker['c'] if isinstance(marker, dict) else marker[0]
+        if already > 10:
+            print(f'  Anonymization already done ({already} DEM- records), skipping.')
+            return
+    except Exception as e:
+        print(f'  Anonymization marker check failed: {e}')
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return
 
     total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees")
@@ -644,8 +653,22 @@ def _anonymize_workers(conn):
     def _rand_future(m=18):
         return (_dt.now() + _td(days=_rnd.randint(-60,m*30))).strftime('%Y-%m-%d')
 
+    # First pass: set all employee_no to temporary unique values to avoid UNIQUE constraint conflicts
+    try:
+        db_execute(conn, "UPDATE employees SET employee_no = 'TMP-' || CAST(id AS TEXT)")
+        conn.commit()
+        print('  Cleared employee_no for re-assignment')
+    except Exception as ex:
+        print(f'  Clear employee_no failed: {ex}')
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return
+
     rows = db_fetchall(conn, 'SELECT id FROM employees')
     used = set()
+    count = 0
     for row in rows:
         eid = row['id'] if isinstance(row, dict) else row[0]
         nat = _rnd.choices(NATS, weights=NAT_W, k=1)[0]
@@ -661,36 +684,55 @@ def _anonymize_workers(conn):
         agreement = f"AGR-{_rnd.randint(10000,99999)}"
         srl = str(_rnd.randint(1, 9999))
 
-        db_execute(conn, '''UPDATE employees SET
-            name=?, nationality=?, dob=?, age=?, designation=?, discipline=?,
-            qualification=?, camp_name=?, employee_no=?, srl=?, agreement_no=?,
-            date_joining=?, date_deployment=?, medical_date=?,
-            last_medical_date=?, next_medical_due=?, medical_result=?,
-            medical_frequency=?, chronic_condition=?, chronic_treated=?,
-            general_feeling=?, eid_passport=?, fieldglass_status=?,
-            asset_name=?, remarks=?
-            WHERE id=?''',
-            (name, nat, dob, age, _rnd.choice(DESIGS), _rnd.choice(DISCS),
-             _rnd.choice(QUALS), _rnd.choice(CAMPS), emp_no, srl, agreement,
-             _rand_recent(36), _rand_recent(24), _rand_recent(12),
-             _rand_recent(8), _rand_future(12), _rnd.choice(MED_RESULTS),
-             _rnd.choice(MED_FREQ), chronic, ct,
-             _rnd.choice(FEELINGS),
-             f"784-{_rnd.randint(1950,2005)}-{_rnd.randint(1000000,9999999)}-{_rnd.randint(1,9)}",
-             _rnd.choice(FIELDGLASS), _rnd.choice(ASSETS), _rnd.choice(REMARKS),
-             eid))
-
-    # Update attendance records to match new employee_nos
-    att_rows = db_fetchall(conn, 'SELECT DISTINCT employee_id FROM attendance WHERE employee_id IS NOT NULL')
-    for ar in att_rows:
-        aid = ar['employee_id'] if isinstance(ar, dict) else ar[0]
-        emp = db_fetchone(conn, 'SELECT employee_no FROM employees WHERE id = ?', (aid,))
-        if emp:
-            new_no = emp['employee_no'] if isinstance(emp, dict) else emp[0]
-            db_execute(conn, 'UPDATE attendance SET employee_no = ? WHERE employee_id = ?', (new_no, aid))
+        try:
+            db_execute(conn, '''UPDATE employees SET
+                name=?, nationality=?, dob=?, age=?, designation=?, discipline=?,
+                qualification=?, camp_name=?, employee_no=?, srl=?, agreement_no=?,
+                date_joining=?, date_deployment=?, medical_date=?,
+                last_medical_date=?, next_medical_due=?, medical_result=?,
+                medical_frequency=?, chronic_condition=?, chronic_treated=?,
+                general_feeling=?, eid_passport=?, fieldglass_status=?,
+                asset_name=?, remarks=?
+                WHERE id=?''',
+                (name, nat, dob, age, _rnd.choice(DESIGS), _rnd.choice(DISCS),
+                 _rnd.choice(QUALS), _rnd.choice(CAMPS), emp_no, srl, agreement,
+                 _rand_recent(36), _rand_recent(24), _rand_recent(12),
+                 _rand_recent(8), _rand_future(12), _rnd.choice(MED_RESULTS),
+                 _rnd.choice(MED_FREQ), chronic, ct,
+                 _rnd.choice(FEELINGS),
+                 f"784-{_rnd.randint(1950,2005)}-{_rnd.randint(1000000,9999999)}-{_rnd.randint(1,9)}",
+                 _rnd.choice(FIELDGLASS), _rnd.choice(ASSETS), _rnd.choice(REMARKS),
+                 eid))
+            count += 1
+        except Exception as ex:
+            print(f'  Anonymize row {eid} failed: {ex}')
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     conn.commit()
-    print(f'  Anonymized {len(rows)} employees (all fields) with dummy data')
+    print(f'  Anonymized {count}/{len(rows)} employees')
+
+    # Update attendance records to match new employee_nos
+    try:
+        att_rows = db_fetchall(conn, 'SELECT DISTINCT employee_id FROM attendance WHERE employee_id IS NOT NULL')
+        att_count = 0
+        for ar in att_rows:
+            aid = ar['employee_id'] if isinstance(ar, dict) else ar[0]
+            emp = db_fetchone(conn, 'SELECT employee_no FROM employees WHERE id = ?', (aid,))
+            if emp:
+                new_no = emp['employee_no'] if isinstance(emp, dict) else emp[0]
+                db_execute(conn, 'UPDATE attendance SET employee_no = ? WHERE employee_id = ?', (new_no, aid))
+                att_count += 1
+        conn.commit()
+        print(f'  Updated {att_count} attendance records')
+    except Exception as ex:
+        print(f'  Attendance update failed: {ex}')
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 # Run init_db at import time so gunicorn/production picks it up
