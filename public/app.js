@@ -104,21 +104,20 @@ function showApp() {
     const role = state.user.role;
     const admin = isAdminRole(role);
     $('#admin-tab').style.display = (role === 'admin' || role === 'executive') ? '' : 'none';
-    $('#trends-tab').style.display = isAdminRole(role) ? '' : 'none';
-    $('#health-tab').style.display = isAdminRole(role) ? '' : 'none';
+    $('#trends-tab').style.display = admin ? '' : 'none';
+    $('#health-tab').style.display = admin ? '' : 'none';
+    $('#twl-tab').style.display = admin ? '' : 'none';
+    $('#workforce-tab').style.display = admin ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
     const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
-    const qrTab = document.querySelector('.tab[data-tab="qrcodes"]');
 
     if (role === 'scanner') {
         if (scannerTab) scannerTab.style.display = '';
         if (dashTab) dashTab.style.display = 'none';
-        if (qrTab) qrTab.style.display = 'none';
         $('#setup-overlay').classList.remove('hidden');
     } else {
         if (scannerTab) scannerTab.style.display = 'none';
         if (dashTab) dashTab.style.display = '';
-        if (qrTab) qrTab.style.display = 'none';
         $('#main-content').style.display = 'block';
         if (dashTab) dashTab.click();
     }
@@ -860,38 +859,17 @@ async function initDashFilters() {
     });
     if (dc) dc.addEventListener('change', refreshDashboard);
 
-    $('#dash-import-btn').addEventListener('click', async () => {
-        const file = $('#dash-import-file')?.files?.[0];
-        if (!file) return toast('Select an Excel file', 'error');
-        const areaId = $('#dash-area').value;
-        if (!areaId) return toast('Select a Division and Area in the filter bar above first', 'error');
-        const status = $('#dash-import-status');
-        status.textContent = 'Importing...';
-        const form = new FormData();
-        form.append('file', file); form.append('area_id', areaId);
-        try {
-            const res = await fetch('/api/import-excel', { method: 'POST', body: form, headers: { 'Authorization': `Bearer ${state.token}` } });
-            const result = await res.json();
-            status.textContent = result.message || 'Done';
-            if (result.success) {
-                toast(result.message, 'success');
-                $('#dash-import-file').value = '';
-                refreshDashboard();
-            }
-        } catch { status.textContent = 'Upload failed'; }
-    });
 }
 
 function refreshDashboard() {
     loadDashboard();
-    loadWorkerList();
-    loadDashQRCodes();
+    loadDashCharts();
     loadPersonnel('present');
     loadContractors();
 }
 
 async function loadDashboard() {
-    const d = $('#dash-date'), p = $('#dash-project');
+    const d = $('#dash-date');
     if (!d.value) d.value = new Date().toISOString().split('T')[0];
 
     const filterParams = getDashFilterParams();
@@ -904,30 +882,19 @@ async function loadDashboard() {
     const headcountDate = d.value || hc.date || new Date().toISOString().split('T')[0];
     const dateLabel = formatHeadcountDate(headcountDate);
     const dateEl = $('#headcount-date-label');
-    if (dateEl) dateEl.textContent = dateLabel ? ` — ${dateLabel}` : '';
+    if (dateEl) dateEl.textContent = dateLabel ? `${dateLabel} →` : '→';
 
     const amP = stats.total_employees > 0 ? Math.round(((stats.today_am || 0) / stats.total_employees) * 100) : 0;
     const evP = stats.total_employees > 0 ? Math.round(((stats.today_ev || 0) / stats.total_employees) * 100) : 0;
     $('#stats-cards').innerHTML = `
-        <div class="stat-card"><div class="stat-value blue">${esc(String(stats.total_employees))}</div><div class="stat-label">Total Workforce</div></div>
-        <div class="stat-card"><div class="stat-value green">${esc(String(stats.today_am ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${amP}%)</small></div><div class="stat-label">9 AM Present</div></div>
-        <div class="stat-card"><div class="stat-value teal">${esc(String(stats.today_ev ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${evP}%)</small></div><div class="stat-label">7 PM Present</div></div>
-        <div class="stat-card"><div class="stat-value orange">${esc(String(stats.total_projects))}</div><div class="stat-label">Projects</div></div>`;
+        <div class="stat-card clickable" data-navigate="workforce"><div class="stat-value blue">${esc(String(stats.total_employees))}</div><div class="stat-label">Total Workforce</div></div>
+        <div class="stat-card clickable" data-navigate="trends"><div class="stat-value green">${esc(String(stats.today_am ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${amP}%)</small></div><div class="stat-label">9 AM Present</div></div>
+        <div class="stat-card clickable" data-navigate="trends"><div class="stat-value teal">${esc(String(stats.today_ev ?? 0))} <small style="font-size:0.7em;opacity:0.7">(${evP}%)</small></div><div class="stat-label">7 PM Present</div></div>
+        <div class="stat-card clickable" data-navigate="workforce"><div class="stat-value orange">${esc(String(stats.total_projects))}</div><div class="stat-label">Projects</div></div>`;
 
-    const tw = $('#headcount-table-wrap');
-    if (!hc.sites || hc.sites.length === 0) {
-        tw.innerHTML = `<div class="empty-state">No attendance data for ${dateLabel || headcountDate}</div>`;
-    } else {
-        let h = `<div class="text-dim" style="font-size:0.85rem;margin-bottom:6px">Date: ${dateLabel || headcountDate}</div><table><thead><tr><th>Project</th><th>Site</th><th>Total</th><th>9 AM</th><th>7 PM</th><th>9 AM %</th></tr></thead><tbody>`;
-        hc.sites.forEach(r => {
-            const am = r.AM ?? 0, ev = r.EV ?? 0;
-            const pct = r.total_employees > 0 ? Math.round((am / r.total_employees) * 100) : 0;
-            const c = pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--danger)';
-            h += `<tr><td>${esc(r.project)}</td><td>${esc(r.site)}</td><td>${r.total_employees}</td><td><strong>${am}</strong></td><td><strong>${ev}</strong></td>
-                <td><div style="display:flex;align-items:center;gap:6px"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${c}"></div></div><span style="font-size:0.8rem">${pct}%</span></div></td></tr>`;
-        });
-        tw.innerHTML = h + '</tbody></table>';
-    }
+    window._dashHC = hc;
+    window._dashStats = stats;
+    drawHeadcountChart(hc);
 }
 
 function getDashFilterParams() {
@@ -1024,8 +991,13 @@ async function loadDashQRCodes() {
     if (!grid) return;
     grid.innerHTML = '<div class="spinner"></div>';
     const search = ($('#qr-search')?.value || '').toLowerCase();
-    const filterParams = getDashFilterParams();
-    let url = '/qrcodes/batch' + (filterParams ? '?' + filterParams : '');
+    const pf = $('#qr-project-filter')?.value;
+    let url = '/qrcodes/batch';
+    if (pf) url += `?project_id=${pf}`;
+    else {
+        const filterParams = getDashFilterParams();
+        if (filterParams) url += '?' + filterParams;
+    }
     const data = await api(url);
     if (!Array.isArray(data)) { grid.innerHTML = '<div class="empty-state">No QR codes</div>'; return; }
     let filtered = search ? data.filter(e => e.name.toLowerCase().includes(search) || e.employee_no.toLowerCase().includes(search)) : data;
@@ -1045,6 +1017,200 @@ function formatHeadcountDate(iso) {
     const [y, m, day] = iso.split('-');
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return `${day} ${months[parseInt(m,10)-1]} ${y}`;
+}
+
+// ============================================================
+// DASHBOARD CHARTS (overview only — click to navigate)
+// ============================================================
+
+function drawHeadcountChart(hc) {
+    const canvas = $('#dash-headcount-chart');
+    if (!canvas || !hc.sites || !hc.sites.length) {
+        if (canvas) { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter, sans-serif'; ctx.fillText('No headcount data', 20, 90); }
+        return;
+    }
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    const sites = hc.sites.slice(0, 8);
+    const pad = { top: 10, right: 16, bottom: 30, left: 100 };
+    const ch = h - pad.top - pad.bottom;
+    const barH = Math.min(20, ch / sites.length * 0.65);
+    const gap = (ch - barH * sites.length) / (sites.length + 1);
+    const maxV = Math.max(...sites.map(s => s.total_employees || 1), 1);
+
+    sites.forEach((s, i) => {
+        const y = pad.top + gap + i * (barH + gap);
+        const am = s.AM ?? 0;
+        const barW = (am / maxV) * (w - pad.left - pad.right);
+        const totalW = (s.total_employees / maxV) * (w - pad.left - pad.right);
+        ctx.fillStyle = 'rgba(148,163,184,0.1)';
+        ctx.fillRect(pad.left, y, totalW, barH);
+        const pct = s.total_employees > 0 ? am / s.total_employees : 0;
+        ctx.fillStyle = pct >= 0.8 ? '#22c55e' : pct >= 0.5 ? '#f59e0b' : '#ef4444';
+        ctx.beginPath();
+        const r = 3;
+        ctx.moveTo(pad.left + r, y); ctx.lineTo(pad.left + barW - r, y);
+        ctx.quadraticCurveTo(pad.left + barW, y, pad.left + barW, y + r);
+        ctx.lineTo(pad.left + barW, y + barH - r);
+        ctx.quadraticCurveTo(pad.left + barW, y + barH, pad.left + barW - r, y + barH);
+        ctx.lineTo(pad.left + r, y + barH);
+        ctx.quadraticCurveTo(pad.left, y + barH, pad.left, y + barH - r);
+        ctx.lineTo(pad.left, y + r);
+        ctx.quadraticCurveTo(pad.left, y, pad.left + r, y);
+        ctx.fill();
+
+        ctx.fillStyle = '#e2e8f0'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(`${am}/${s.total_employees}`, pad.left + barW + 6, y + barH / 2 + 4);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        const label = (s.project || '').length > 14 ? (s.project || '').slice(0, 13) + '…' : (s.project || '');
+        ctx.fillText(label, pad.left - 6, y + barH / 2 + 4);
+    });
+}
+
+async function loadDashCharts() {
+    loadDashAttendanceChart();
+    loadDashTWLGauge();
+    loadDashHealthChart();
+    loadDashWeatherSummary();
+    loadDashNationalityChart();
+}
+
+async function loadDashAttendanceChart() {
+    const canvas = $('#dash-attendance-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const params = new URLSearchParams();
+    if (filterParams) filterParams.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
+    params.set('days', '7');
+    params.set('session', 'AM');
+    const data = await api('/trends?' + params.toString());
+    if (!data || !data.labels) return;
+    drawLineChart(canvas, data.labels, data.values, data.total);
+}
+
+async function loadDashTWLGauge() {
+    const el = $('#dash-twl-gauge');
+    if (!el) return;
+    const filterParams = getDashFilterParams();
+    let qp = 'days=1';
+    const area = $('#dash-area')?.value;
+    if (area) qp += `&area_id=${area}`;
+    const data = await api('/twl/summary?' + qp);
+    if (!data || !data.today || data.today.length === 0) {
+        el.innerHTML = `<div class="twl-gauge-wrap">
+            <div class="twl-gauge-value" style="color:var(--text-dim)">—</div>
+            <div class="twl-gauge-detail">No TWL readings today</div>
+            <div class="twl-gauge-bar"><div class="twl-gauge-marker" style="left:50%"></div></div>
+            <div class="twl-gauge-labels"><span>&lt;115</span><span>115</span><span>140</span><span>220+</span></div>
+        </div>`;
+        return;
+    }
+    const latest = data.today[0];
+    const val = latest.twl_value;
+    const zone = latest.risk_zone;
+    const zoneColors = { low: '#22c55e', medium: '#f59e0b', high: '#ef4444' };
+    const zoneLabels = { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' };
+    const zoneBg = { low: 'rgba(34,197,94,0.15)', medium: 'rgba(245,158,11,0.15)', high: 'rgba(239,68,68,0.15)' };
+    const markerPct = Math.max(0, Math.min(100, ((val - 80) / (220 - 80)) * 100));
+
+    el.innerHTML = `<div class="twl-gauge-wrap">
+        <div class="twl-gauge-value" style="color:${zoneColors[zone]}">${val}</div>
+        <div class="twl-gauge-zone" style="background:${zoneBg[zone]};color:${zoneColors[zone]}">${zoneLabels[zone]}</div>
+        <div class="twl-gauge-bar"><div class="twl-gauge-marker" style="left:${markerPct}%"></div></div>
+        <div class="twl-gauge-labels"><span>&lt;115</span><span>115</span><span>140</span><span>220+</span></div>
+        <div class="twl-gauge-detail">${latest.area_name || ''} at ${latest.reading_time || ''}</div>
+    </div>`;
+}
+
+async function loadDashHealthChart() {
+    const canvas = $('#dash-health-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const data = await api('/health-trends' + (filterParams ? '?' + filterParams : ''));
+    if (!data || !data.total) return;
+    drawDonutChart(canvas, [
+        { label: 'Fit', value: data.medical.fit, color: '#22c55e' },
+        { label: 'Unfit', value: data.medical.unfit, color: '#ef4444' },
+        { label: 'No Result', value: data.medical.no_result, color: '#94a3b8' },
+    ], data.total);
+}
+
+async function loadDashWeatherSummary() {
+    const el = $('#dash-weather-summary');
+    if (!el) return;
+    const coords = getWeatherCoords();
+    const today = new Date().toISOString().split('T')[0];
+    try {
+        const resp = await fetch(`https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&start_date=${today}&end_date=${today}&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,relative_humidity_2m_max,precipitation_sum&timezone=Asia%2FDubai`);
+        const w = await resp.json();
+        if (!w.daily || !w.daily.time || !w.daily.time.length) throw new Error('No data');
+        const d = w.daily;
+        el.innerHTML = `<div class="dash-weather-row">
+            <div class="dash-weather-item"><div class="dash-weather-val" style="color:#f59e0b">${(d.temperature_2m_max[0] ?? 0).toFixed(0)}°</div><div class="dash-weather-lbl">High</div></div>
+            <div class="dash-weather-item"><div class="dash-weather-val" style="color:#38bdf8">${(d.temperature_2m_min[0] ?? 0).toFixed(0)}°</div><div class="dash-weather-lbl">Low</div></div>
+            <div class="dash-weather-item"><div class="dash-weather-val" style="color:#06b6d4">${(d.relative_humidity_2m_max[0] ?? 0).toFixed(0)}%</div><div class="dash-weather-lbl">Humidity</div></div>
+            <div class="dash-weather-item"><div class="dash-weather-val" style="color:#8b5cf6">${(d.wind_speed_10m_max[0] ?? 0).toFixed(0)}</div><div class="dash-weather-lbl">Wind km/h</div></div>
+            <div class="dash-weather-item"><div class="dash-weather-val" style="color:#3b82f6">${(d.precipitation_sum[0] ?? 0).toFixed(1)}</div><div class="dash-weather-lbl">Rain mm</div></div>
+        </div>`;
+        if ((d.temperature_2m_max[0] || 0) > 45 || (d.wind_speed_10m_max[0] || 0) > 40) {
+            el.innerHTML += '<div class="weather-warn" style="margin-top:8px;grid-column:1/-1">⚠ Extreme conditions — check TWL</div>';
+        }
+    } catch {
+        el.innerHTML = '<div class="empty-state" style="padding:20px">Weather unavailable</div>';
+    }
+}
+
+async function loadDashNationalityChart() {
+    const canvas = $('#dash-nationality-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const data = await api('/employees' + (filterParams ? '?' + filterParams : ''));
+    if (!Array.isArray(data) || !data.length) return;
+    const natCounts = {};
+    data.forEach(w => { const n = w.nationality || 'Unknown'; natCounts[n] = (natCounts[n] || 0) + 1; });
+    const sorted = Object.entries(natCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    drawDonutChart(canvas, sorted.map(([label, value], i) => ({ label, value, color: colors[i % colors.length] })), data.length);
+}
+
+function drawDonutChart(canvas, segments, total) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    if (!segments.length || total === 0) { ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No data', w/2 - 25, h/2); return; }
+
+    const cx = w * 0.35, cy = h / 2, radius = Math.min(cx - 10, cy - 10, 70);
+    const inner = radius * 0.55;
+    let startAngle = -Math.PI / 2;
+    segments.forEach(seg => {
+        const slice = (seg.value / total) * Math.PI * 2;
+        ctx.beginPath(); ctx.moveTo(cx + inner * Math.cos(startAngle), cy + inner * Math.sin(startAngle));
+        ctx.arc(cx, cy, radius, startAngle, startAngle + slice);
+        ctx.arc(cx, cy, inner, startAngle + slice, startAngle, true);
+        ctx.closePath(); ctx.fillStyle = seg.color; ctx.fill();
+        startAngle += slice;
+    });
+    ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 16px Inter'; ctx.textAlign = 'center';
+    ctx.fillText(total, cx, cy + 6);
+
+    let ly = Math.max(16, cy - segments.length * 11);
+    const lx = w * 0.7;
+    ctx.textAlign = 'left'; ctx.font = '10px Inter';
+    segments.forEach(seg => {
+        ctx.fillStyle = seg.color; ctx.fillRect(lx, ly - 5, 8, 8);
+        ctx.fillStyle = '#e2e8f0'; ctx.fillText(`${seg.label} (${seg.value})`, lx + 12, ly + 3);
+        ly += 18;
+    });
+}
+
+function navigateToTab(tabName) {
+    const tab = document.querySelector(`.tab[data-tab="${tabName}"]`);
+    if (tab && tab.style.display !== 'none') tab.click();
 }
 
 async function loadPersonnel(view = 'present') {
@@ -1699,32 +1865,6 @@ function renderRiskTable(data) {
         }).join('') + '</tbody></table>';
 }
 
-// ============================================================
-// QR CODES (separate tab for print view)
-// ============================================================
-async function loadQRCodesTab() {
-    const grid = $('#qr-grid-tab');
-    if (!grid) return;
-    const pf = $('#qr-project-filter').value, search = ($('#qr-search-tab')?.value || '').toLowerCase();
-    grid.innerHTML = '<div class="spinner"></div>';
-
-    let url = '/qrcodes/batch';
-    if (pf) url += `?project_id=${pf}`;
-    const data = await api(url);
-    if (!Array.isArray(data)) { grid.innerHTML = '<div class="empty-state">Error loading</div>'; return; }
-
-    let filtered = search ? data.filter(e => e.name.toLowerCase().includes(search) || e.employee_no.toLowerCase().includes(search)) : data;
-    if (!filtered.length) { grid.innerHTML = '<div class="empty-state">No employees found</div>'; return; }
-
-    grid.innerHTML = filtered.map(e => `<div class="qr-card" data-emp="${esc(e.employee_no)}">
-        <img src="data:image/png;base64,${e.qr_base64}" alt="QR ${esc(e.employee_no)}">
-        <div class="qr-name">${esc(e.name)}</div>
-        <div class="qr-id">${esc(e.employee_no)}</div>
-        <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
-        ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
-        <div class="qr-handout">POB Tracker — present at site</div>
-        </div>`).join('');
-}
 
 // ============================================================
 // ADMIN PANEL
@@ -2149,6 +2289,9 @@ function initAdmin() {
 // TABS
 // ============================================================
 let _dashInited = false;
+let _workforceInited = false;
+let _twlInited = false;
+
 function initTabs() {
     let adminInit = false;
     $$('.tab').forEach(tab => {
@@ -2163,12 +2306,19 @@ function initTabs() {
                 if (!_dashInited) { initDashFilters(); _dashInited = true; }
                 refreshDashboard();
             }
-            else if (target === 'qrcodes') { loadProjects($('#qr-project-filter'), true); loadQRCodesTab(); }
+            else if (target === 'workforce') { initWorkforceTab(); }
             else if (target === 'trends') { initTrends(); }
             else if (target === 'health') { initHealthTrends(); }
+            else if (target === 'twl') { initTWLTab(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });
+    });
+
+    // Dashboard click-to-navigate on cards and charts
+    document.addEventListener('click', (e) => {
+        const card = e.target.closest('[data-navigate]');
+        if (card) navigateToTab(card.dataset.navigate);
     });
 
     $('#dash-date').addEventListener('change', refreshDashboard);
@@ -2188,11 +2338,7 @@ function initTabs() {
     let qrT;
     $('#qr-search')?.addEventListener('input', () => { clearTimeout(qrT); qrT = setTimeout(loadDashQRCodes, 300); });
     $('#btn-print-qr')?.addEventListener('click', () => window.print());
-
-    let qrT2;
-    $('#qr-search-tab')?.addEventListener('input', () => { clearTimeout(qrT2); qrT2 = setTimeout(loadQRCodesTab, 300); });
-    $('#qr-project-filter')?.addEventListener('change', loadQRCodesTab);
-    $('#btn-print-qr-tab')?.addEventListener('click', () => window.print());
+    $('#qr-project-filter')?.addEventListener('change', loadDashQRCodes);
 
     let workerT;
     $('#worker-search')?.addEventListener('input', () => {
@@ -2204,12 +2350,12 @@ function initTabs() {
         }, 300);
     });
 
-    $('#btn-export').addEventListener('click', async () => {
-        const d = $('#dash-date').value || new Date().toISOString().split('T')[0];
+    $('#btn-export')?.addEventListener('click', async () => {
+        const d = $('#dash-date')?.value || new Date().toISOString().split('T')[0];
         try {
             const { token: dlToken } = await api('/export/download-token', { method: 'POST' });
             let url = `/api/export/attendance?date=${d}&dl_token=${dlToken}`;
-            if ($('#dash-project').value) url += `&project_id=${$('#dash-project').value}`;
+            if ($('#dash-project')?.value) url += `&project_id=${$('#dash-project').value}`;
             window.open(url, '_blank');
         } catch (e) {
             toast('Export failed', 'error');
@@ -2219,7 +2365,7 @@ function initTabs() {
         try {
             const { token: dlToken } = await api('/export/download-token', { method: 'POST' });
             let url = `/api/export/roster?dl_token=${dlToken}`;
-            if ($('#dash-project').value) url += `&project_id=${$('#dash-project').value}`;
+            if ($('#dash-project')?.value) url += `&project_id=${$('#dash-project').value}`;
             window.open(url, '_blank');
         } catch (e) {
             toast('Export failed', 'error');
@@ -2239,6 +2385,262 @@ function initTabs() {
         $('#main-content').style.display = 'none';
         if (state.scanner) { try { state.scanner.stop(); } catch(e) {} state.scanning = false; }
     });
+}
+
+// ============================================================
+// WORKFORCE TAB
+// ============================================================
+
+async function initWorkforceTab() {
+    if (!_workforceInited) {
+        _workforceInited = true;
+        const wfArea = $('#wf-area');
+        const divs = await api('/divisions');
+        const allAreas = await api('/areas');
+        if (wfArea && Array.isArray(allAreas)) {
+            wfArea.innerHTML = '<option value="">Select Area</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        }
+        $('#dash-import-btn')?.addEventListener('click', async () => {
+            const file = $('#dash-import-file')?.files?.[0];
+            if (!file) return toast('Select an Excel file', 'error');
+            const areaId = $('#wf-area')?.value;
+            if (!areaId) return toast('Select an area first', 'error');
+            const status = $('#dash-import-status');
+            status.textContent = 'Importing...';
+            const form = new FormData();
+            form.append('file', file); form.append('area_id', areaId);
+            try {
+                const res = await fetch('/api/import-excel', { method: 'POST', body: form, headers: { 'Authorization': `Bearer ${state.token}` } });
+                const result = await res.json();
+                status.textContent = result.message || 'Done';
+                if (result.success) {
+                    toast(result.message, 'success');
+                    $('#dash-import-file').value = '';
+                    loadWorkerList();
+                    loadDashQRCodes();
+                }
+            } catch { status.textContent = 'Upload failed'; }
+        });
+    }
+    loadWorkerList();
+    loadDashQRCodes();
+    loadProjects($('#qr-project-filter'), true);
+}
+
+// ============================================================
+// TWL TAB
+// ============================================================
+
+async function initTWLTab() {
+    if (!_twlInited) {
+        _twlInited = true;
+        const twlArea = $('#twl-area');
+        const twlFilterDiv = $('#twl-filter-division');
+        const twlFilterArea = $('#twl-filter-area');
+
+        const divs = await api('/divisions');
+        const allAreas = await api('/areas');
+        if (twlArea && Array.isArray(allAreas)) {
+            twlArea.innerHTML = '<option value="">Select Area</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        }
+        if (twlFilterDiv && Array.isArray(divs)) {
+            twlFilterDiv.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        }
+        if (twlFilterArea && Array.isArray(allAreas)) {
+            twlFilterArea.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        }
+
+        twlFilterDiv?.addEventListener('change', async () => {
+            twlFilterArea.innerHTML = '<option value="">All Areas</option>';
+            if (twlFilterDiv.value) {
+                const areas = await api(`/areas?division_id=${twlFilterDiv.value}`);
+                if (Array.isArray(areas)) twlFilterArea.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+            }
+            loadTWLData();
+        });
+        twlFilterArea?.addEventListener('change', loadTWLData);
+        $('#twl-filter-days')?.addEventListener('change', loadTWLData);
+
+        $('#btn-twl-submit')?.addEventListener('click', submitTWLReading);
+    }
+    loadTWLData();
+}
+
+async function submitTWLReading() {
+    const twlValue = $('#twl-value')?.value;
+    if (!twlValue) return toast('Enter TWL value', 'error');
+    const body = {
+        area_id: $('#twl-area')?.value || null,
+        twl_value: parseFloat(twlValue),
+        temperature: $('#twl-temp')?.value ? parseFloat($('#twl-temp').value) : null,
+        humidity: $('#twl-humidity')?.value ? parseFloat($('#twl-humidity').value) : null,
+        wind_speed: $('#twl-wind')?.value ? parseFloat($('#twl-wind').value) : null,
+        work_type: $('#twl-work-type')?.value || 'light',
+        notes: $('#twl-notes')?.value || '',
+    };
+    const res = await api('/twl', { method: 'POST', body: JSON.stringify(body) });
+    const resultEl = $('#twl-result');
+    if (res.success) {
+        const zi = res.zone_info;
+        const zoneColors = { low: '#22c55e', medium: '#f59e0b', high: '#ef4444' };
+        resultEl.innerHTML = `<div style="padding:12px;border-radius:var(--radius);background:rgba(${res.risk_zone === 'high' ? '239,68,68' : res.risk_zone === 'medium' ? '245,158,11' : '34,197,94'},0.12);border:1px solid ${zoneColors[res.risk_zone]}30">
+            <strong style="color:${zoneColors[res.risk_zone]}">${zi.label}</strong>
+            <p style="margin-top:4px;font-size:0.85rem;color:var(--text-dim)">${zi.interventions}</p>
+        </div>`;
+        toast(res.message, 'success');
+        $('#twl-value').value = '';
+        $('#twl-temp').value = '';
+        $('#twl-humidity').value = '';
+        $('#twl-wind').value = '';
+        $('#twl-notes').value = '';
+        loadTWLData();
+    } else {
+        toast(res.message || 'Failed', 'error');
+    }
+}
+
+async function loadTWLData() {
+    const area = $('#twl-filter-area')?.value;
+    const division = $('#twl-filter-division')?.value;
+    const days = $('#twl-filter-days')?.value || '30';
+    let qp = `days=${days}`;
+    if (area) qp += `&area_id=${area}`;
+    else if (division) qp += `&division_id=${division}`;
+
+    const [summary, readings] = await Promise.all([
+        api('/twl/summary?' + qp),
+        api('/twl?' + qp)
+    ]);
+
+    renderTWLSummary(summary);
+    renderTWLTrendChart(summary);
+    renderTWLReadings(readings);
+}
+
+function renderTWLSummary(data) {
+    const el = $('#twl-summary-cards');
+    if (!el || !data) return;
+    const zones = data.zones || {};
+    const highDays = data.high_risk_days || 0;
+    const total = data.total_readings || 0;
+
+    el.innerHTML = `
+        <div class="stat-card"><div class="stat-value blue">${total}</div><div class="stat-label">Total Readings</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#f59e0b">${data.avg_twl}</div><div class="stat-label">Avg TWL</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ef4444">${data.min_twl}</div><div class="stat-label">Min TWL</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#22c55e">${data.max_twl}</div><div class="stat-label">Max TWL</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#22c55e">${zones.low || 0}</div><div class="stat-label">Low Risk</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#f59e0b">${zones.medium || 0}</div><div class="stat-label">Medium Risk</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ef4444">${zones.high || 0}</div><div class="stat-label">High Risk</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#ef4444">${highDays}</div><div class="stat-label">High Risk Days</div></div>`;
+}
+
+function renderTWLTrendChart(data) {
+    const canvas = $('#twl-trend-chart');
+    if (!canvas || !data || !data.trend || !data.trend.length) {
+        if (canvas) { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#94a3b8'; ctx.font = '14px Inter'; ctx.fillText('No TWL trend data yet', 20, 60); }
+        return;
+    }
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+
+    const trend = data.trend;
+    const pad = { top: 30, right: 20, bottom: 40, left: 50 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+    const n = trend.length, stepX = n > 1 ? cw / (n - 1) : cw;
+    const allVals = trend.flatMap(t => [t.avg_twl, t.min_twl, t.max_twl]).filter(v => v != null);
+    const maxV = Math.max(...allVals, 220, 1);
+    const minV = Math.min(...allVals, 80);
+    const range = maxV - minV || 1;
+
+    // Risk zone bands
+    const y115 = pad.top + ch - (ch * (115 - minV) / range);
+    const y140 = pad.top + ch - (ch * (140 - minV) / range);
+    ctx.fillStyle = 'rgba(239,68,68,0.06)';
+    ctx.fillRect(pad.left, y115, cw, pad.top + ch - y115);
+    ctx.fillStyle = 'rgba(245,158,11,0.06)';
+    ctx.fillRect(pad.left, y140, cw, y115 - y140);
+    ctx.fillStyle = 'rgba(34,197,94,0.06)';
+    ctx.fillRect(pad.left, pad.top, cw, y140 - pad.top);
+
+    // Threshold lines
+    [{ v: 115, c: '#ef4444', l: 'High Risk < 115' }, { v: 140, c: '#f59e0b', l: 'Medium < 140' }].forEach(th => {
+        const y = pad.top + ch - (ch * (th.v - minV) / range);
+        ctx.setLineDash([4, 4]); ctx.strokeStyle = th.c + '60'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.setLineDash([]); ctx.fillStyle = th.c; ctx.font = '9px Inter'; ctx.textAlign = 'left';
+        ctx.fillText(th.l, pad.left + 4, y - 3);
+    });
+
+    // Grid
+    ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + ch - (ch * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(minV + range * i / 4), pad.left - 6, y + 3);
+    }
+
+    // Range fill (min to max)
+    ctx.fillStyle = 'rgba(59,130,246,0.1)';
+    ctx.beginPath();
+    trend.forEach((t, i) => { const x = pad.left + i * stepX, y = pad.top + ch - (ch * (t.max_twl - minV) / range); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    for (let i = n - 1; i >= 0; i--) { const x = pad.left + i * stepX, y = pad.top + ch - (ch * (trend[i].min_twl - minV) / range); ctx.lineTo(x, y); }
+    ctx.closePath(); ctx.fill();
+
+    // Avg line
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    trend.forEach((t, i) => { const x = pad.left + i * stepX, y = pad.top + ch - (ch * (t.avg_twl - minV) / range); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.stroke();
+
+    // Dots colored by zone
+    trend.forEach((t, i) => {
+        const x = pad.left + i * stepX, y = pad.top + ch - (ch * (t.avg_twl - minV) / range);
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = t.avg_twl < 115 ? '#ef4444' : t.avg_twl < 140 ? '#f59e0b' : '#22c55e';
+        ctx.fill();
+    });
+
+    // X labels
+    ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter'; ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(n / 7));
+    trend.forEach((t, i) => { if (i % step === 0 || i === n - 1) { const x = pad.left + i * stepX; const parts = t.reading_date.split('-'); ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 14); } });
+
+    // Legend
+    const legend = [['Avg TWL', '#3b82f6'], ['Range (min-max)', 'rgba(59,130,246,0.3)']];
+    let lx = pad.left; ctx.font = '10px Inter';
+    legend.forEach(([label, color]) => { ctx.fillStyle = color; ctx.fillRect(lx, 6, 14, 4); ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 18, 12); lx += ctx.measureText(label).width + 34; });
+}
+
+function renderTWLReadings(readings) {
+    const el = $('#twl-readings-list');
+    if (!el) return;
+    if (!Array.isArray(readings) || !readings.length) {
+        el.innerHTML = '<div class="empty-state">No TWL readings in this period</div>';
+        return;
+    }
+    const zoneBadge = (z) => `<span class="twl-reading-badge twl-badge-${z}">${z}</span>`;
+    el.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>Date</th><th>Time</th><th>Area</th><th>TWL</th><th>Zone</th>
+        <th>Temp °C</th><th>Humidity %</th><th>Wind km/h</th><th>Work Type</th><th>Recorded By</th><th>Notes</th>
+        </tr></thead><tbody>` +
+        readings.slice(0, 200).map(r => `<tr>
+            <td>${formatHeadcountDate(r.reading_date)}</td>
+            <td>${esc(r.reading_time || '')}</td>
+            <td>${esc(r.area_name || '—')}</td>
+            <td><strong style="color:${r.risk_zone === 'high' ? '#ef4444' : r.risk_zone === 'medium' ? '#f59e0b' : '#22c55e'}">${r.twl_value}</strong></td>
+            <td>${zoneBadge(r.risk_zone)}</td>
+            <td>${r.temperature != null ? r.temperature : '—'}</td>
+            <td>${r.humidity != null ? r.humidity : '—'}</td>
+            <td>${r.wind_speed != null ? r.wind_speed : '—'}</td>
+            <td>${esc(r.work_type || '')}</td>
+            <td>${esc(r.recorded_by_name || '')}</td>
+            <td>${esc(r.notes || '')}</td>
+        </tr>`).join('') + '</tbody></table>';
 }
 
 // ============================================================

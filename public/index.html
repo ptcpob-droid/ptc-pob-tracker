@@ -187,17 +187,13 @@
     <!-- Main Content -->
     <main id="main-content" style="display:none">
         <nav class="tab-nav">
-            <button class="tab active" data-tab="scanner">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
-                Contractor Scanner
-            </button>
             <button class="tab" data-tab="dashboard">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Dashboard
             </button>
-            <button class="tab" data-tab="qrcodes">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-5v5"/></svg>
-                QR Codes
+            <button class="tab" data-tab="workforce" id="workforce-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+                Workforce
             </button>
             <button class="tab" data-tab="trends" id="trends-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -207,11 +203,155 @@
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z"/></svg>
                 Health
             </button>
+            <button class="tab" data-tab="twl" id="twl-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 00-5 0v11.26a4.5 4.5 0 105 0z"/></svg>
+                TWL
+            </button>
+            <button class="tab active" data-tab="scanner">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+                Scanner
+            </button>
             <button class="tab" data-tab="admin" id="admin-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                 Admin
             </button>
         </nav>
+
+        <!-- Dashboard Tab (Charts & Overview Only) -->
+        <div id="tab-dashboard" class="tab-content">
+            <div class="dash-filter-bar">
+                <select id="dash-division" class="input"><option value="">All Divisions</option></select>
+                <select id="dash-area" class="input"><option value="">All Areas</option></select>
+                <select id="dash-project" class="input"><option value="">All Projects</option></select>
+                <select id="dash-contractor" class="input"><option value="">All Contractors</option></select>
+                <input type="date" id="dash-date" class="input" style="max-width:160px">
+            </div>
+
+            <!-- Summary Stats Row -->
+            <div id="stats-cards" class="stats-grid"></div>
+
+            <!-- Charts Grid -->
+            <div class="dash-charts-grid">
+                <!-- Attendance Mini Chart -->
+                <div class="dash-chart-card clickable" data-navigate="trends">
+                    <div class="dash-chart-header">
+                        <h4>Attendance Trend</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Last 7 days &rarr;</span>
+                    </div>
+                    <canvas id="dash-attendance-chart" height="180" style="width:100%"></canvas>
+                </div>
+
+                <!-- TWL Gauge -->
+                <div class="dash-chart-card clickable" data-navigate="twl">
+                    <div class="dash-chart-header">
+                        <h4>TWL Status</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Today &rarr;</span>
+                    </div>
+                    <div id="dash-twl-gauge"></div>
+                </div>
+
+                <!-- Health Overview Donut -->
+                <div class="dash-chart-card clickable" data-navigate="health">
+                    <div class="dash-chart-header">
+                        <h4>Health Overview</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Medical fitness &rarr;</span>
+                    </div>
+                    <canvas id="dash-health-chart" height="180" style="width:100%"></canvas>
+                </div>
+
+                <!-- Headcount Bar Chart -->
+                <div class="dash-chart-card clickable" data-navigate="workforce">
+                    <div class="dash-chart-header">
+                        <h4>Headcount by Project</h4>
+                        <span id="headcount-date-label" class="text-dim" style="font-size:0.75rem"></span>
+                    </div>
+                    <canvas id="dash-headcount-chart" height="180" style="width:100%"></canvas>
+                </div>
+
+                <!-- Weather Card -->
+                <div class="dash-chart-card clickable" data-navigate="trends">
+                    <div class="dash-chart-header">
+                        <h4>Weather Conditions</h4>
+                        <span id="dash-weather-label" class="text-dim" style="font-size:0.75rem">Today &rarr;</span>
+                    </div>
+                    <div id="dash-weather-summary"></div>
+                </div>
+
+                <!-- Workforce Composition -->
+                <div class="dash-chart-card clickable" data-navigate="workforce">
+                    <div class="dash-chart-header">
+                        <h4>Workforce</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Nationality &rarr;</span>
+                    </div>
+                    <canvas id="dash-nationality-chart" height="180" style="width:100%"></canvas>
+                </div>
+            </div>
+
+            <!-- Personnel Attendance Quick View -->
+            <div class="section">
+                <div class="section-header">
+                    <h3>Personnel Attendance</h3>
+                    <span id="personnel-date-label" class="text-dim" style="font-size:0.85rem;font-weight:normal"></span>
+                    <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session">
+                        <option value="AM">9 AM</option>
+                        <option value="EV">7 PM</option>
+                    </select>
+                    <div class="toggle-group">
+                        <button class="btn-toggle active" data-view="present">Present</button>
+                        <button class="btn-toggle" data-view="missing">Missing</button>
+                    </div>
+                </div>
+                <div id="personnel-list" class="personnel-list"></div>
+            </div>
+        </div>
+
+        <!-- Workforce Tab (Workers, Imports, QR, Exports) -->
+        <div id="tab-workforce" class="tab-content">
+            <!-- Import Section -->
+            <div class="section dash-upload-section">
+                <div class="section-header">
+                    <h3>Import Manpower Data</h3>
+                    <button id="btn-export" class="btn btn-sm btn-outline">Export Attendance CSV</button>
+                    <button id="btn-export-roster" class="btn btn-sm btn-outline">Export Roster</button>
+                </div>
+                <div class="dash-upload-row">
+                    <div class="form-group" style="flex:1;min-width:180px">
+                        <label>Area (from Dashboard filter)</label>
+                        <select id="wf-area" class="input"><option value="">Select Area</option></select>
+                    </div>
+                    <div class="form-group" style="flex:1.5;min-width:180px">
+                        <label>Excel (.xlsx)</label>
+                        <input type="file" id="dash-import-file" class="input" accept=".xlsx" style="padding:6px">
+                    </div>
+                    <div class="form-group" style="align-self:flex-end">
+                        <button id="dash-import-btn" class="btn btn-primary">Upload &amp; Import</button>
+                    </div>
+                </div>
+                <div id="dash-import-status" style="font-size:0.85rem;color:var(--text-dim);margin-top:4px"></div>
+            </div>
+
+            <!-- Worker List -->
+            <div class="section">
+                <div class="section-header" style="flex-wrap:wrap;gap:8px">
+                    <h3>Workers</h3>
+                    <input type="text" id="worker-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
+                    <span id="worker-count-label" class="text-dim" style="font-size:0.85rem"></span>
+                </div>
+                <div id="worker-list" class="table-wrap" style="max-height:500px;overflow:auto"></div>
+            </div>
+
+            <!-- QR Codes Section -->
+            <div class="section">
+                <div class="section-header" style="flex-wrap:wrap;gap:8px">
+                    <h3>QR Codes</h3>
+                    <select id="qr-project-filter" class="input" style="max-width:200px"><option value="">All Projects</option></select>
+                    <input type="text" id="qr-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
+                    <button id="btn-print-qr" class="btn btn-sm btn-primary">Print All QR Cards</button>
+                </div>
+                <p class="qr-print-hint">Each worker has a unique QR. Print cards or download individually.</p>
+                <div id="qr-grid" class="qr-grid"></div>
+            </div>
+        </div>
 
         <!-- Scanner Tab -->
         <div id="tab-scanner" class="tab-content active">
@@ -241,108 +381,13 @@
             <div class="recent-scans"><h3>Recent Scans</h3><div id="recent-scans-list"></div></div>
         </div>
 
-        <!-- Dashboard Tab -->
-        <div id="tab-dashboard" class="tab-content">
-            <!-- Division / Area / Project filter bar -->
-            <div class="dash-filter-bar">
-                <select id="dash-division" class="input"><option value="">All Divisions</option></select>
-                <select id="dash-area" class="input"><option value="">All Areas</option></select>
-                <select id="dash-project" class="input"><option value="">All Projects</option></select>
-                <select id="dash-contractor" class="input"><option value="">All Contractors</option></select>
-                <input type="date" id="dash-date" class="input" style="max-width:160px">
-            </div>
-
-            <!-- Excel Upload Section (uses filter bar division/area) -->
-            <div class="section dash-upload-section">
-                <div class="section-header">
-                    <h3>Import Manpower Data</h3>
-                    <span class="text-dim" style="font-size:0.85rem">Into selected area above</span>
-                </div>
-                <div class="dash-upload-row">
-                    <div class="form-group" style="flex:1.5;min-width:180px">
-                        <label>Excel (.xlsx)</label>
-                        <input type="file" id="dash-import-file" class="input" accept=".xlsx" style="padding:6px">
-                    </div>
-                    <div class="form-group" style="align-self:flex-end">
-                        <button id="dash-import-btn" class="btn btn-primary">Upload &amp; Import</button>
-                    </div>
-                </div>
-                <div id="dash-import-status" style="font-size:0.85rem;color:var(--text-dim);margin-top:4px"></div>
-            </div>
-
-            <!-- Stats Cards -->
-            <div id="stats-cards" class="stats-grid"></div>
-
-            <!-- Headcount Table -->
-            <div class="section">
-                <div class="section-header">
-                    <h3>Headcount by Project / Site</h3>
-                    <span id="headcount-date-label" class="text-dim" style="font-size:0.9rem;font-weight:normal"></span>
-                    <button id="btn-export" class="btn btn-sm btn-outline">Export Attendance CSV</button>
-                    <button id="btn-export-roster" class="btn btn-sm btn-outline">Export Roster (all fields)</button>
-                </div>
-                <div id="headcount-table-wrap" class="table-wrap"></div>
-            </div>
-
-            <!-- Worker List -->
-            <div class="section">
-                <div class="section-header" style="flex-wrap:wrap;gap:8px">
-                    <h3>Workers</h3>
-                    <input type="text" id="worker-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
-                    <span id="worker-count-label" class="text-dim" style="font-size:0.85rem"></span>
-                </div>
-                <div id="worker-list" class="table-wrap" style="max-height:500px;overflow:auto"></div>
-            </div>
-
-            <!-- QR Codes Section -->
-            <div class="section">
-                <div class="section-header" style="flex-wrap:wrap;gap:8px">
-                    <h3>QR Codes</h3>
-                    <input type="text" id="qr-search" class="input" placeholder="Search name or ID..." style="max-width:220px">
-                    <button id="btn-print-qr" class="btn btn-sm btn-primary">Print All QR Cards</button>
-                </div>
-                <p class="qr-print-hint">Each worker has a unique QR. Print cards or download individually.</p>
-                <div id="qr-grid" class="qr-grid"></div>
-            </div>
-
-            <!-- Personnel Attendance -->
-            <div class="section">
-                <div class="section-header">
-                    <h3>Personnel Attendance</h3>
-                    <span id="personnel-date-label" class="text-dim" style="font-size:0.85rem;font-weight:normal"></span>
-                    <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session for Present/Missing">
-                        <option value="AM">9 AM</option>
-                        <option value="EV">7 PM</option>
-                    </select>
-                    <div class="toggle-group">
-                        <button class="btn-toggle active" data-view="present">Present</button>
-                        <button class="btn-toggle" data-view="missing">Missing</button>
-                    </div>
-                </div>
-                <div id="personnel-list" class="personnel-list"></div>
-            </div>
-        </div>
-
-        <!-- QR Codes Tab (kept for scanner-only print view) -->
-        <div id="tab-qrcodes" class="tab-content">
-            <div class="qr-controls">
-                <select id="qr-project-filter" class="input"><option value="">All Projects</option></select>
-                <input type="text" id="qr-search-tab" class="input" placeholder="Search by name or ID...">
-                <button id="btn-print-qr-tab" class="btn btn-primary">Print QR Cards</button>
-            </div>
-            <p class="qr-print-hint">Each person has a unique QR code. Select a project, then <strong>Print QR Cards</strong>.</p>
-            <div id="qr-grid-tab" class="qr-grid"></div>
-        </div>
-
         <!-- Attendance Trends Tab -->
         <div id="tab-trends" class="tab-content">
-            <!-- Row 1: Location filters -->
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
                 <select id="trend-division" class="input"><option value="">All Divisions</option></select>
                 <select id="trend-area" class="input"><option value="">All Areas</option></select>
                 <select id="trend-contractor" class="input"><option value="">All Contractors</option></select>
             </div>
-            <!-- Row 2: Data filters -->
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px">
                 <select id="trend-session" class="input" style="max-width:110px">
                     <option value="AM">9 AM</option>
@@ -359,17 +404,11 @@
                     <input type="checkbox" id="trend-dummy"> Demo
                 </label>
             </div>
-
-            <!-- Insights cards -->
             <div id="trend-insights" class="stats-grid" style="margin-top:16px"></div>
-
-            <!-- Attendance chart -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Attendance Trend</h3>
                 <canvas id="trend-chart" height="280" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
             </div>
-
-            <!-- Weather -->
             <div class="section">
                 <div class="section-header" style="margin-bottom:8px">
                     <h3>Weather Conditions</h3>
@@ -378,8 +417,6 @@
                 <div id="weather-cards" class="stats-grid" style="margin-bottom:12px"></div>
                 <canvas id="weather-chart" height="200" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
             </div>
-
-            <!-- Breakdown table -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Daily Breakdown</h3>
                 <div id="trend-breakdown" class="table-wrap" style="max-height:400px;overflow:auto"></div>
@@ -388,7 +425,6 @@
 
         <!-- Health Trends Tab -->
         <div id="tab-health" class="tab-content">
-            <!-- Filters -->
             <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">
                 <select id="ht-division" class="input"><option value="">All Divisions</option></select>
                 <select id="ht-area" class="input"><option value="">All Areas</option></select>
@@ -397,33 +433,115 @@
                     <input type="checkbox" id="ht-dummy"> Demo
                 </label>
             </div>
-
-            <!-- Risk Overview Cards -->
             <div id="ht-risk-overview" class="stats-grid" style="margin-top:12px"></div>
-
-            <!-- Medical Compliance -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Medical Compliance</h3>
                 <div id="ht-medical-cards" class="stats-grid"></div>
                 <canvas id="ht-medical-chart" height="260" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px;margin-top:12px"></canvas>
             </div>
-
-            <!-- Chronic Conditions -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Chronic Conditions &amp; Wellness</h3>
                 <div id="ht-chronic-cards" class="stats-grid"></div>
             </div>
-
-            <!-- Workforce Risk Breakdown -->
             <div class="section">
                 <h3 style="margin-bottom:12px">Personnel Health Risk Breakdown</h3>
                 <div id="ht-risk-table" class="table-wrap" style="max-height:500px;overflow:auto"></div>
             </div>
         </div>
 
+        <!-- TWL (Thermal Work Limit) Tab -->
+        <div id="tab-twl" class="tab-content">
+            <!-- TWL Entry Form -->
+            <div class="section twl-entry-section">
+                <h3 style="margin-bottom:12px">Record TWL Reading</h3>
+                <div class="twl-entry-form">
+                    <div class="form-group">
+                        <label>Area</label>
+                        <select id="twl-area" class="input"><option value="">Select Area</option></select>
+                    </div>
+                    <div class="form-group">
+                        <label>TWL Value</label>
+                        <input type="number" id="twl-value" class="input" placeholder="e.g. 135" min="50" max="250" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label>Temperature (°C)</label>
+                        <input type="number" id="twl-temp" class="input" placeholder="e.g. 42" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label>Humidity (%)</label>
+                        <input type="number" id="twl-humidity" class="input" placeholder="e.g. 65" min="0" max="100" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Wind Speed (km/h)</label>
+                        <input type="number" id="twl-wind" class="input" placeholder="e.g. 15" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label>Work Type</label>
+                        <select id="twl-work-type" class="input">
+                            <option value="light">Light Work</option>
+                            <option value="heavy">Heavy Work</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <input type="text" id="twl-notes" class="input" placeholder="Optional notes">
+                    </div>
+                    <button id="btn-twl-submit" class="btn btn-primary">Record Reading</button>
+                </div>
+                <div id="twl-result" style="margin-top:12px"></div>
+            </div>
+
+            <!-- TWL Reference -->
+            <div class="section twl-reference">
+                <h3 style="margin-bottom:12px">TWL Risk Zone Reference</h3>
+                <div class="twl-zones-grid">
+                    <div class="twl-zone-card twl-zone-low">
+                        <div class="twl-zone-header">Low Risk — Unrestricted</div>
+                        <div class="twl-zone-range">TWL 140 – 220</div>
+                        <div class="twl-zone-detail">Light work: 600mL–1L/hr | All continuous self-paced work safe</div>
+                    </div>
+                    <div class="twl-zone-card twl-zone-medium">
+                        <div class="twl-zone-header">Medium Risk — Cautionary</div>
+                        <div class="twl-zone-range">TWL 115 – 140</div>
+                        <div class="twl-zone-detail">Light: 1–1.2L/hr | Heavy: >1.2L/hr | Paced: 45 work–15 rest</div>
+                    </div>
+                    <div class="twl-zone-card twl-zone-high">
+                        <div class="twl-zone-header">High Risk</div>
+                        <div class="twl-zone-range">TWL &lt; 115</div>
+                        <div class="twl-zone-detail">All: >1.2L/hr | Light: 45–15 | Heavy: 20 work–40 rest</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TWL Filters -->
+            <div class="dash-filter-bar" style="flex-wrap:wrap;gap:6px">
+                <select id="twl-filter-division" class="input"><option value="">All Divisions</option></select>
+                <select id="twl-filter-area" class="input"><option value="">All Areas</option></select>
+                <select id="twl-filter-days" class="input" style="max-width:130px">
+                    <option value="7">Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+            </div>
+
+            <!-- TWL Analytics -->
+            <div id="twl-summary-cards" class="stats-grid" style="margin-top:12px"></div>
+
+            <div class="section">
+                <h3 style="margin-bottom:12px">TWL Trend</h3>
+                <canvas id="twl-trend-chart" height="260" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
+            </div>
+
+            <!-- TWL Readings Log -->
+            <div class="section">
+                <h3 style="margin-bottom:12px">Recent Readings</h3>
+                <div id="twl-readings-list" class="table-wrap" style="max-height:400px;overflow:auto"></div>
+            </div>
+        </div>
+
         <!-- Admin Tab (admin only) -->
         <div id="tab-admin" class="tab-content">
-            <!-- Manage Users -->
             <div class="settings-section">
                 <h3>Manage Users</h3>
                 <p class="form-hint" style="margin-bottom:12px">Scanner = PIN login, others = 2FA login. Click Edit to change access.</p>
@@ -448,11 +566,9 @@
                     <div id="new-user-areas" class="user-areas-wrap" style="display:none;margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
                 </details>
             </div>
-
-            <!-- Manage Divisions & Areas -->
             <div class="settings-section">
                 <h3>Divisions &amp; Areas</h3>
-                <p class="form-hint" style="margin-bottom:12px">Edit or delete divisions/areas. Names must be consistent (e.g. SHAH, QW, MN, FUJ).</p>
+                <p class="form-hint" style="margin-bottom:12px">Edit or delete divisions/areas.</p>
                 <div id="div-area-list"></div>
                 <details style="margin-top:12px">
                     <summary style="cursor:pointer;color:var(--primary);font-weight:600;margin-bottom:8px">+ Add Division or Area</summary>
@@ -467,8 +583,6 @@
                     </div>
                 </details>
             </div>
-
-            <!-- Scanner Management -->
             <div class="settings-section">
                 <div class="section-header" style="margin-bottom:12px">
                     <h3>Approved Scanners</h3>
@@ -477,8 +591,6 @@
                 <p class="form-hint" style="margin-bottom:12px">All registered contractor scanners with scan activity, approval &amp; security status.</p>
                 <div id="scanner-status-list" class="table-wrap" style="max-height:500px;overflow:auto"></div>
             </div>
-
-            <!-- 2FA & Audit -->
             <div class="settings-section">
                 <h3>My 2FA</h3>
                 <div id="my-2fa-status"></div>

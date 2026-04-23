@@ -369,6 +369,8 @@ select.input { cursor: pointer; }
 .stat-value.orange { color: var(--warning); }
 .stat-value.purple { color: #a855f7; }
 .stat-value.teal { color: #14b8a6; }
+.stat-card.clickable { cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; border: 1px solid transparent; }
+.stat-card.clickable:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.2); border-color: var(--primary); }
 
 /* Sections */
 .section { margin-bottom: 24px; }
@@ -520,9 +522,11 @@ tr:last-child td { border-bottom: none; }
 /* Print styles for QR codes — one card per person, cut and hand out */
 @media print {
     body { background: white; color: black; }
-    .topbar, .tab-nav, .qr-controls, .overlay, .toast-container, .qr-print-hint { display: none !important; }
+    .topbar, .tab-nav, .qr-controls, .overlay, .toast-container, .qr-print-hint, .dash-filter-bar,
+    .dash-upload-section, .section-header, .dash-charts-grid, #stats-cards, #personnel-list,
+    .twl-entry-section, .twl-reference { display: none !important; }
     .tab-content { display: none !important; }
-    #tab-qrcodes { display: block !important; padding: 0; }
+    #tab-workforce { display: block !important; padding: 0; }
     .qr-grid {
         grid-template-columns: repeat(3, 1fr);
         gap: 12px;
@@ -540,10 +544,17 @@ tr:last-child td { border-bottom: none; }
 }
 
 /* Responsive */
+@media (max-width: 600px) {
+    .dash-charts-grid { grid-template-columns: 1fr; }
+    .twl-entry-form { grid-template-columns: 1fr 1fr; }
+    .twl-zones-grid { grid-template-columns: 1fr; }
+}
 @media (max-width: 380px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .qr-grid { grid-template-columns: repeat(2, 1fr); }
     .stat-value { font-size: 1.5rem; }
+    .dash-charts-grid { grid-template-columns: 1fr; }
+    .twl-entry-form { grid-template-columns: 1fr; }
 }
 
 /* Loading spinner */
@@ -596,6 +607,96 @@ tr:last-child td { border-bottom: none; }
 /* Weather */
 #weather-cards .stat-card { min-width: 110px; }
 .weather-warn { background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.3); color: #eab308; border-radius: var(--radius); padding: 8px 12px; font-size: 0.82rem; margin-bottom: 8px; }
+
+/* ===================== Dashboard Charts Grid ===================== */
+.dash-charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.dash-chart-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+}
+.dash-chart-card.clickable {
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+    border: 1px solid transparent;
+}
+.dash-chart-card.clickable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+    border-color: var(--primary);
+}
+.dash-chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.dash-chart-header h4 { font-size: 0.9rem; font-weight: 600; }
+.dash-chart-card canvas { display: block; border-radius: 8px; }
+
+/* Dashboard weather summary */
+.dash-weather-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.dash-weather-item { text-align: center; flex: 1; min-width: 60px; }
+.dash-weather-val { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.dash-weather-lbl { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+
+/* TWL Gauge */
+.twl-gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 8px 0; }
+.twl-gauge-value { font-size: 2.5rem; font-weight: 700; line-height: 1; }
+.twl-gauge-zone { font-size: 0.85rem; font-weight: 600; margin-top: 4px; padding: 3px 14px; border-radius: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+.twl-gauge-bar { width: 100%; height: 10px; border-radius: 5px; margin-top: 12px; position: relative; background: linear-gradient(to right, #ef4444 0%, #ef4444 33%, #f59e0b 33%, #f59e0b 66%, #22c55e 66%, #22c55e 100%); }
+.twl-gauge-marker { position: absolute; top: -4px; width: 4px; height: 18px; background: white; border-radius: 2px; transform: translateX(-50%); box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+.twl-gauge-labels { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; font-size: 0.65rem; color: var(--text-dim); }
+.twl-gauge-detail { font-size: 0.78rem; color: var(--text-dim); margin-top: 8px; text-align: center; }
+
+/* ===================== TWL Tab ===================== */
+.twl-entry-section {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+}
+.twl-entry-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    align-items: end;
+}
+.twl-entry-form .form-group { margin-bottom: 0; }
+
+.twl-zones-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+.twl-zone-card {
+    border-radius: var(--radius);
+    padding: 16px;
+    border-left: 5px solid;
+}
+.twl-zone-low { background: rgba(34,197,94,0.08); border-color: #22c55e; }
+.twl-zone-medium { background: rgba(245,158,11,0.08); border-color: #f59e0b; }
+.twl-zone-high { background: rgba(239,68,68,0.08); border-color: #ef4444; }
+.twl-zone-header { font-weight: 700; font-size: 0.9rem; margin-bottom: 4px; }
+.twl-zone-low .twl-zone-header { color: #22c55e; }
+.twl-zone-medium .twl-zone-header { color: #f59e0b; }
+.twl-zone-high .twl-zone-header { color: #ef4444; }
+.twl-zone-range { font-size: 0.8rem; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+.twl-zone-detail { font-size: 0.75rem; color: var(--text-dim); line-height: 1.5; }
+
+.twl-reference { margin-bottom: 20px; }
+
+.twl-reading-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.twl-badge-low { background: rgba(34,197,94,0.15); color: #22c55e; }
+.twl-badge-medium { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.twl-badge-high { background: rgba(239,68,68,0.15); color: #ef4444; }
 
 /* Health Trends */
 .risk-card { position: relative; overflow: hidden; }

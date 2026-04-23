@@ -334,6 +334,22 @@ def init_db():
                 supervisor_name TEXT,
                 latitude REAL, longitude REAL,
                 UNIQUE(employee_no, project_id, scan_date, session)
+            )''',
+            '''CREATE TABLE IF NOT EXISTS twl_readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                area_id INTEGER REFERENCES areas(id),
+                site_id INTEGER REFERENCES sites(id),
+                reading_date TEXT NOT NULL,
+                reading_time TEXT,
+                twl_value REAL NOT NULL,
+                risk_zone TEXT NOT NULL,
+                temperature REAL,
+                humidity REAL,
+                wind_speed REAL,
+                work_type TEXT DEFAULT 'light',
+                recorded_by INTEGER REFERENCES users(id),
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         ]
 
@@ -356,6 +372,8 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_token ON auth_tokens(token)',
             'CREATE INDEX IF NOT EXISTS idx_upa_user ON user_project_access(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_uda_user ON user_division_access(user_id)',
+            'CREATE INDEX IF NOT EXISTS idx_twl_date ON twl_readings(reading_date)',
+            'CREATE INDEX IF NOT EXISTS idx_twl_area ON twl_readings(area_id)',
         ]
         for sql in indexes:
             try:
@@ -2088,6 +2106,182 @@ def api_health_trends():
         'medical_freq': [{'label': r['medical_frequency'], 'count': r['c']} for r in freq_rows],
         'chronic_types': [{'label': r['chronic_condition'], 'count': r['c']} for r in chronic_rows],
         'risk_people': [dict(r) for r in risk_people],
+    })
+
+
+# ============================================================
+# TWL (Thermal Work Limit)
+# ============================================================
+
+def compute_twl_risk_zone(twl_value):
+    if twl_value >= 140:
+        return 'low'
+    elif twl_value >= 115:
+        return 'medium'
+    else:
+        return 'high'
+
+TWL_ZONES = {
+    'low': {
+        'label': 'Low Risk — Unrestricted',
+        'twl_range': '140 – 220',
+        'color': '#22c55e',
+        'interventions': 'No limits on self-paced work for educated, hydrated workers',
+        'rehydration': {'light': '600 mL – 1 Liter/hour'},
+        'work_rest': {'light': 'Safe for all continuous self-paced work'},
+    },
+    'medium': {
+        'label': 'Medium Risk — Cautionary',
+        'twl_range': '115 – 140',
+        'color': '#f59e0b',
+        'interventions': 'Environmental conditions require additional precautions; implement practicable engineering control measures to reduce heat stress (e.g. shade, ventilation)',
+        'rehydration': {'light': '1 – 1.2 Liters/hour', 'heavy': '> 1.2 Liters/hour'},
+        'work_rest': {'light': 'Safe for continuous self-paced light work', 'heavy': '45 min work – 15 min rest'},
+    },
+    'high': {
+        'label': 'High Risk',
+        'twl_range': '< 115',
+        'color': '#ef4444',
+        'interventions': 'Strict work/rest cycling required; No person to work alone; No unacclimatized person to work; Induction required; Provide personal water bottle (2L) on-site',
+        'rehydration': {'all': '> 1.2 Liters/hour'},
+        'work_rest': {'light': '45 min work – 15 min rest', 'heavy': '20 min work – 40 min rest'},
+    },
+}
+
+
+@app.route('/api/twl', methods=['POST'])
+@require_auth
+def api_twl_record():
+    data = request.get_json(force=True)
+    twl_value = data.get('twl_value')
+    area_id = data.get('area_id')
+    site_id = data.get('site_id')
+    reading_date = data.get('reading_date', date.today().isoformat())
+    reading_time = data.get('reading_time', datetime.now().strftime('%H:%M'))
+    temperature = data.get('temperature')
+    humidity = data.get('humidity')
+    wind_speed = data.get('wind_speed')
+    work_type = data.get('work_type', 'light')
+    notes = data.get('notes', '')
+
+    if twl_value is None:
+        return jsonify({'success': False, 'message': 'TWL value is required'}), 400
+    try:
+        twl_value = float(twl_value)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'TWL value must be a number'}), 400
+
+    risk_zone = compute_twl_risk_zone(twl_value)
+
+    conn = get_db()
+    try:
+        db_execute(conn, '''INSERT INTO twl_readings
+            (area_id, site_id, reading_date, reading_time, twl_value, risk_zone,
+             temperature, humidity, wind_speed, work_type, recorded_by, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (area_id, site_id, reading_date, reading_time, twl_value, risk_zone,
+             temperature, humidity, wind_speed, work_type, request.user['id'], notes))
+        conn.commit()
+    finally:
+        conn.close()
+
+    zone_info = TWL_ZONES[risk_zone]
+    audit(request.user['id'], 'twl_reading', f'TWL={twl_value} zone={risk_zone} area={area_id}')
+    return jsonify({
+        'success': True,
+        'message': f'TWL reading recorded: {twl_value} ({zone_info["label"]})',
+        'risk_zone': risk_zone,
+        'zone_info': zone_info
+    })
+
+
+@app.route('/api/twl')
+@require_auth
+def api_twl_list():
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
+    days = int(request.args.get('days', 30))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+
+    conn = get_db()
+    try:
+        query = '''SELECT t.*, a.name as area_name, u.display_name as recorded_by_name
+            FROM twl_readings t
+            LEFT JOIN areas a ON a.id = t.area_id
+            LEFT JOIN users u ON u.id = t.recorded_by
+            WHERE t.reading_date >= ? AND t.reading_date <= ?'''
+        params = [start.isoformat(), end.isoformat()]
+        if area_id:
+            query += ' AND t.area_id = ?'
+            params.append(area_id)
+        elif division_id:
+            query += ' AND a.division_id = ?'
+            params.append(division_id)
+        query += ' ORDER BY t.reading_date DESC, t.reading_time DESC'
+        rows = db_fetchall(conn, query, params)
+    finally:
+        conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/twl/summary')
+@require_auth
+def api_twl_summary():
+    area_id = request.args.get('area_id', type=int)
+    division_id = request.args.get('division_id', type=int)
+    days = int(request.args.get('days', 30))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    today_str = date.today().isoformat()
+
+    conn = get_db()
+    try:
+        where = 'WHERE t.reading_date >= ? AND t.reading_date <= ?'
+        params = [start.isoformat(), end.isoformat()]
+        if area_id:
+            where += ' AND t.area_id = ?'
+            params.append(area_id)
+        elif division_id:
+            where += ' AND a.division_id = ?'
+            params.append(division_id)
+
+        base = f'''FROM twl_readings t
+            LEFT JOIN areas a ON a.id = t.area_id
+            {where}'''
+
+        total_readings = db_fetchone(conn, f'SELECT COUNT(*) as c {base}', params)['c']
+
+        zone_counts = db_fetchall(conn, f'SELECT risk_zone, COUNT(*) as c {base} GROUP BY risk_zone', params)
+        zones = {r['risk_zone']: r['c'] for r in zone_counts}
+
+        avg_twl = db_fetchone(conn, f'SELECT AVG(twl_value) as avg_val, MIN(twl_value) as min_val, MAX(twl_value) as max_val {base}', params)
+
+        today_params = [today_str, today_str]
+        if area_id:
+            today_params.append(area_id)
+        elif division_id:
+            today_params.append(division_id)
+        today_where = where.replace(start.isoformat(), today_str).replace(end.isoformat(), today_str)
+        today_base = f'''FROM twl_readings t LEFT JOIN areas a ON a.id = t.area_id {today_where}'''
+        today_readings = db_fetchall(conn, f'SELECT t.twl_value, t.risk_zone, t.reading_time, a.name as area_name {today_base} ORDER BY t.reading_time DESC', today_params)
+
+        trend = db_fetchall(conn, f'SELECT t.reading_date, AVG(t.twl_value) as avg_twl, MIN(t.twl_value) as min_twl, MAX(t.twl_value) as max_twl, COUNT(*) as readings {base} GROUP BY t.reading_date ORDER BY t.reading_date', params)
+
+        high_risk_days = db_fetchone(conn, f"SELECT COUNT(DISTINCT t.reading_date) as c {base} AND t.risk_zone = 'high'", params)['c']
+    finally:
+        conn.close()
+
+    return jsonify({
+        'total_readings': total_readings,
+        'zones': zones,
+        'avg_twl': round(avg_twl['avg_val'] or 0, 1),
+        'min_twl': round(avg_twl['min_val'] or 0, 1),
+        'max_twl': round(avg_twl['max_val'] or 0, 1),
+        'today': [dict(r) for r in today_readings],
+        'trend': [dict(r) for r in trend],
+        'high_risk_days': high_risk_days,
+        'zone_definitions': TWL_ZONES,
     })
 
 
