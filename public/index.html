@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f172a">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>PTC POB Tracker</title>
+    <title>Digital HSE Headcount & Worker Health Awareness</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -19,8 +19,8 @@
     <div id="login-screen" class="login-screen">
         <div class="login-box">
             <div class="login-logo">
-                <span class="logo" style="font-size:2rem">POB</span>
-                <span class="logo-sub" style="font-size:1.2rem">Tracker</span>
+                <span class="logo" style="font-size:1.6rem">Digital HSE</span>
+                <span class="logo-sub" style="font-size:0.85rem">Headcount & Worker Health</span>
             </div>
 
             <!-- Login mode toggle -->
@@ -103,8 +103,8 @@
     <!-- Top Bar -->
     <header class="topbar" style="display:none">
         <div class="topbar-left">
-            <span class="logo">POB</span>
-            <span class="logo-sub">Tracker</span>
+            <span class="logo">Digital HSE</span>
+            <span class="logo-sub">Headcount & Worker Health</span>
         </div>
         <div class="topbar-right">
             <span id="live-clock" class="clock"></span>
@@ -207,6 +207,10 @@
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 00-5 0v11.26a4.5 4.5 0 105 0z"/></svg>
                 TWL
             </button>
+            <button class="tab" data-tab="oi" id="oi-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                O&amp;I
+            </button>
             <button class="tab active" data-tab="scanner">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
                 Scanner
@@ -224,11 +228,42 @@
                 <select id="dash-area" class="input"><option value="">All Areas</option></select>
                 <select id="dash-project" class="input"><option value="">All Projects</option></select>
                 <select id="dash-contractor" class="input"><option value="">All Contractors</option></select>
-                <input type="date" id="dash-date" class="input" style="max-width:160px">
+            </div>
+
+            <!-- Date Slider Bar -->
+            <div class="dash-date-slider">
+                <div class="dash-slider-controls">
+                    <button id="dash-slider-prev" class="dash-slider-btn" title="Previous">&lsaquo;</button>
+                    <div class="dash-slider-track-wrap">
+                        <input type="range" id="dash-slider-range" class="dash-slider-range" min="0" max="30" value="30">
+                        <div class="dash-slider-date-label" id="dash-slider-date-label"></div>
+                    </div>
+                    <button id="dash-slider-next" class="dash-slider-btn" title="Next">&rsaquo;</button>
+                </div>
+                <div class="dash-slider-meta">
+                    <select id="dash-slider-mode" class="input dash-slider-mode-sel">
+                        <option value="day">Daily</option>
+                        <option value="week">Weekly</option>
+                    </select>
+                    <div class="dash-slider-session-toggle">
+                        <button class="dash-session-btn active" data-session="AM">AM</button>
+                        <button class="dash-session-btn" data-session="PM">PM</button>
+                    </div>
+                    <button id="dash-slider-today" class="btn btn-sm" style="padding:4px 12px;font-size:0.75rem">Today</button>
+                </div>
             </div>
 
             <!-- Summary Stats Row -->
             <div id="stats-cards" class="stats-grid"></div>
+
+            <!-- Insights & Anomalies Panel -->
+            <div id="anomalies-panel" class="anomalies-panel" style="display:none">
+                <div class="anomalies-header">
+                    <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Insights &amp; Anomalies <span id="anomaly-count" class="anomaly-count-badge"></span></h3>
+                    <button id="anomalies-toggle" class="btn btn-sm" style="padding:3px 10px;font-size:0.7rem">Collapse</button>
+                </div>
+                <div id="anomalies-list" class="anomalies-list"></div>
+            </div>
 
             <!-- Charts Grid -->
             <div class="dash-charts-grid">
@@ -268,6 +303,24 @@
                     <canvas id="dash-headcount-chart" height="180" style="width:100%"></canvas>
                 </div>
 
+                <!-- O&I Observations -->
+                <div class="dash-chart-card clickable" data-navigate="oi">
+                    <div class="dash-chart-header">
+                        <h4>O&amp;I Observations</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Group &rarr;</span>
+                    </div>
+                    <canvas id="dash-oi-chart" height="180" style="width:100%"></canvas>
+                </div>
+
+                <!-- Workers by Discipline -->
+                <div class="dash-chart-card clickable" data-navigate="workforce">
+                    <div class="dash-chart-header">
+                        <h4>Workers by Discipline</h4>
+                        <span class="text-dim" style="font-size:0.75rem">Breakdown &rarr;</span>
+                    </div>
+                    <canvas id="dash-discipline-chart" height="180" style="width:100%"></canvas>
+                </div>
+
                 <!-- Weather Card -->
                 <div class="dash-chart-card clickable" data-navigate="trends">
                     <div class="dash-chart-header">
@@ -275,6 +328,24 @@
                         <span id="dash-weather-label" class="text-dim" style="font-size:0.75rem">Today &rarr;</span>
                     </div>
                     <div id="dash-weather-summary"></div>
+                </div>
+
+                <!-- Present vs Missing Chart -->
+                <div class="dash-chart-card clickable" data-navigate="trends">
+                    <div class="dash-chart-header">
+                        <h4>Present vs Missing</h4>
+                        <span class="text-dim" style="font-size:0.75rem">By project &rarr;</span>
+                    </div>
+                    <canvas id="dash-missing-chart" height="180" style="width:100%"></canvas>
+                </div>
+
+                <!-- Chronic Illness Chart -->
+                <div class="dash-chart-card clickable" data-navigate="health">
+                    <div class="dash-chart-header">
+                        <h4>Chronic Conditions</h4>
+                        <span class="text-dim" style="font-size:0.75rem">By type &rarr;</span>
+                    </div>
+                    <canvas id="dash-chronic-chart" height="180" style="width:100%"></canvas>
                 </div>
 
                 <!-- Workforce Composition -->
@@ -292,10 +363,6 @@
                 <div class="section-header">
                     <h3>Personnel Attendance</h3>
                     <span id="personnel-date-label" class="text-dim" style="font-size:0.85rem;font-weight:normal"></span>
-                    <select id="dash-session" class="input" style="width:auto;min-width:90px" title="Session">
-                        <option value="AM">9 AM</option>
-                        <option value="EV">7 PM</option>
-                    </select>
                     <div class="toggle-group">
                         <button class="btn-toggle active" data-view="present">Present</button>
                         <button class="btn-toggle" data-view="missing">Missing</button>
@@ -537,6 +604,76 @@
             <div class="section">
                 <h3 style="margin-bottom:12px">Recent Readings</h3>
                 <div id="twl-readings-list" class="table-wrap" style="max-height:400px;overflow:auto"></div>
+            </div>
+        </div>
+
+        <!-- O&I Observations Tab -->
+        <div id="tab-oi" class="tab-content">
+            <div class="section oi-entry-section">
+                <h3 style="margin-bottom:12px">Record Observation</h3>
+                <form id="oi-entry-form" class="oi-entry-form">
+                    <div class="form-row">
+                        <label>Date<input type="date" id="oi-date" class="input" required></label>
+                        <label>Division<select id="oi-division" class="input"><option value="">Select</option></select></label>
+                        <label>Area<select id="oi-area" class="input"><option value="">Select</option></select></label>
+                        <label>Project<select id="oi-project" class="input"><option value="">Select</option></select></label>
+                    </div>
+                    <div class="form-row">
+                        <label>Observer Name<input type="text" id="oi-observer-name" class="input" placeholder="Name"></label>
+                        <label>Designation<input type="text" id="oi-observer-desg" class="input" placeholder="Designation"></label>
+                        <label>Discipline<select id="oi-observer-disc" class="input"><option value="">Select</option></select></label>
+                        <label>Employee Type<select id="oi-emp-type" class="input"><option value="">Select</option></select></label>
+                    </div>
+                    <div class="form-row">
+                        <label>Observation Group<select id="oi-group" class="input" required><option value="">Select</option></select></label>
+                        <label>Observation Type<select id="oi-type" class="input"><option value="">Select</option></select></label>
+                        <label>Potential Severity<select id="oi-severity" class="input"><option value="">Select</option></select></label>
+                        <label>Risk Rating<select id="oi-risk" class="input"><option value="">Select</option></select></label>
+                    </div>
+                    <div class="form-row">
+                        <label style="flex:2">Observation<textarea id="oi-text" class="input" rows="2" placeholder="Describe the observation"></textarea></label>
+                        <label style="flex:2">Corrective Action<textarea id="oi-action" class="input" rows="2" placeholder="Corrective action/recommendation"></textarea></label>
+                    </div>
+                    <div class="form-row" style="justify-content:flex-end">
+                        <button type="submit" class="btn btn-primary">Submit Observation</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- O&I Filters -->
+            <div class="dash-filter-bar" style="margin-top:16px">
+                <select id="oi-filter-division" class="input"><option value="">All Divisions</option></select>
+                <select id="oi-filter-days" class="input" style="max-width:130px">
+                    <option value="7">Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+            </div>
+
+            <!-- O&I Summary -->
+            <div id="oi-summary-cards" class="stats-grid" style="margin-top:12px"></div>
+
+            <!-- O&I Charts -->
+            <div class="dash-charts-grid" style="margin-top:16px">
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>By Observation Group</h4></div>
+                    <canvas id="oi-group-chart" height="200" style="width:100%"></canvas>
+                </div>
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>By Type (Top 10)</h4></div>
+                    <canvas id="oi-type-chart" height="200" style="width:100%"></canvas>
+                </div>
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>By Severity</h4></div>
+                    <canvas id="oi-severity-chart" height="200" style="width:100%"></canvas>
+                </div>
+            </div>
+
+            <!-- O&I Readings Log -->
+            <div class="section" style="margin-top:16px">
+                <h3 style="margin-bottom:12px">Recent Observations</h3>
+                <div id="oi-readings-list" class="table-wrap" style="max-height:400px;overflow:auto"></div>
             </div>
         </div>
 

@@ -107,6 +107,7 @@ function showApp() {
     $('#trends-tab').style.display = admin ? '' : 'none';
     $('#health-tab').style.display = admin ? '' : 'none';
     $('#twl-tab').style.display = admin ? '' : 'none';
+    $('#oi-tab').style.display = admin ? '' : 'none';
     $('#workforce-tab').style.display = admin ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
     const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
@@ -830,56 +831,180 @@ function playSound(type) {
 // DASHBOARD
 // ============================================================
 let _dashWorkers = [];
+let _sliderDates = [];
+let _sliderSession = 'AM';
+
+function buildSliderDates(mode) {
+    const dates = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (mode === 'week') {
+        for (let i = 12; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i * 7);
+            dates.push(d.toISOString().split('T')[0]);
+        }
+    } else {
+        for (let i = 30; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i);
+            dates.push(d.toISOString().split('T')[0]);
+        }
+    }
+    return dates;
+}
+
+function getSliderDate() {
+    const slider = $('#dash-slider-range');
+    if (!slider || !_sliderDates.length) return new Date().toISOString().split('T')[0];
+    return _sliderDates[parseInt(slider.value)] || _sliderDates[_sliderDates.length - 1];
+}
+
+function formatSliderLabel(dateStr, mode) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const opts = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+    if (mode === 'week') {
+        const end = new Date(d);
+        end.setDate(end.getDate() + 6);
+        return `Week of ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+    }
+    return d.toLocaleDateString('en-GB', opts);
+}
+
+function initDateSlider() {
+    const slider = $('#dash-slider-range');
+    const label = $('#dash-slider-date-label');
+    const modeSelect = $('#dash-slider-mode');
+    const prevBtn = $('#dash-slider-prev');
+    const nextBtn = $('#dash-slider-next');
+    const todayBtn = $('#dash-slider-today');
+    if (!slider) return;
+
+    function rebuildSlider() {
+        const mode = modeSelect?.value || 'day';
+        _sliderDates = buildSliderDates(mode);
+        slider.max = _sliderDates.length - 1;
+        slider.value = _sliderDates.length - 1;
+        updateSliderLabel();
+    }
+
+    function updateSliderLabel() {
+        const mode = modeSelect?.value || 'day';
+        const dateStr = getSliderDate();
+        if (label) label.textContent = formatSliderLabel(dateStr, mode);
+    }
+
+    slider.addEventListener('input', () => {
+        updateSliderLabel();
+        refreshDashboard();
+    });
+
+    if (prevBtn) prevBtn.addEventListener('click', () => {
+        slider.value = Math.max(0, parseInt(slider.value) - 1);
+        updateSliderLabel();
+        refreshDashboard();
+    });
+
+    if (nextBtn) nextBtn.addEventListener('click', () => {
+        slider.value = Math.min(parseInt(slider.max), parseInt(slider.value) + 1);
+        updateSliderLabel();
+        refreshDashboard();
+    });
+
+    if (todayBtn) todayBtn.addEventListener('click', () => {
+        slider.value = _sliderDates.length - 1;
+        updateSliderLabel();
+        refreshDashboard();
+    });
+
+    if (modeSelect) modeSelect.addEventListener('change', () => {
+        rebuildSlider();
+        refreshDashboard();
+    });
+
+    document.querySelectorAll('.dash-session-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.dash-session-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            _sliderSession = btn.dataset.session;
+            refreshDashboard();
+        });
+    });
+
+    rebuildSlider();
+}
 
 async function initDashFilters() {
     const dd = $('#dash-division'), da = $('#dash-area'), dp = $('#dash-project'), dc = $('#dash-contractor');
-    const divs = await api('/divisions');
+
+    const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
     if (Array.isArray(divs)) {
         dd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
     }
+    if (Array.isArray(allAreas)) {
+        da.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    }
+
     dd.addEventListener('change', async () => {
-        da.innerHTML = '<option value="">All Areas</option>';
         dp.innerHTML = '<option value="">All Projects</option>';
         if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
         if (dd.value) {
             const areas = await api(`/areas?division_id=${dd.value}`);
-            if (Array.isArray(areas)) da.innerHTML = '<option value="">All Areas</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+            da.innerHTML = '<option value="">All Areas</option>';
+            if (Array.isArray(areas)) da.innerHTML += areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+            const projs = await api(`/projects?division_id=${dd.value}`);
+            if (Array.isArray(projs)) dp.innerHTML = '<option value="">All Projects</option>' + projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+        } else {
+            if (Array.isArray(allAreas)) da.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         }
+        await loadContractors();
         refreshDashboard();
     });
+
     da.addEventListener('change', async () => {
-        dp.innerHTML = '<option value="">All Projects</option>';
         if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
-        if (da.value) await loadProjects(dp, true, da.value, null);
+        if (da.value) {
+            await loadProjects(dp, true, da.value, null);
+        } else if (dd.value) {
+            const projs = await api(`/projects?division_id=${dd.value}`);
+            dp.innerHTML = '<option value="">All Projects</option>';
+            if (Array.isArray(projs)) dp.innerHTML += projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+        } else {
+            dp.innerHTML = '<option value="">All Projects</option>';
+        }
+        await loadContractors();
         refreshDashboard();
     });
+
     dp.addEventListener('change', async () => {
         await loadContractors();
         refreshDashboard();
     });
-    if (dc) dc.addEventListener('change', refreshDashboard);
 
+    if (dc) dc.addEventListener('change', () => refreshDashboard());
+
+    await loadContractors();
+    initDateSlider();
 }
 
 function refreshDashboard() {
     loadDashboard();
     loadDashCharts();
     loadPersonnel('present');
-    loadContractors();
+    loadAnomalies();
 }
 
 async function loadDashboard() {
-    const d = $('#dash-date');
-    if (!d.value) d.value = new Date().toISOString().split('T')[0];
+    const selectedDate = getSliderDate();
 
     const filterParams = getDashFilterParams();
-    let url = `/headcount?date=${d.value}` + (filterParams ? '&' + filterParams : '');
+    let url = `/headcount?date=${selectedDate}` + (filterParams ? '&' + filterParams : '');
     let su = '/stats' + (filterParams ? '?' + filterParams : '');
 
     const [hc, stats] = await Promise.all([api(url), api(su)]);
     if (!stats.total_employees && stats.total_employees !== 0) return;
 
-    const headcountDate = d.value || hc.date || new Date().toISOString().split('T')[0];
+    const headcountDate = selectedDate || hc.date || new Date().toISOString().split('T')[0];
     const dateLabel = formatHeadcountDate(headcountDate);
     const dateEl = $('#headcount-date-label');
     if (dateEl) dateEl.textContent = dateLabel ? `${dateLabel} →` : '→';
@@ -1008,7 +1133,7 @@ async function loadDashQRCodes() {
         <div class="qr-id">${esc(e.employee_no)}</div>
         <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
         ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
-        <div class="qr-handout">POB Tracker — present at site</div>
+        <div class="qr-handout">Digital HSE — present at site</div>
         </div>`).join('');
 }
 
@@ -1072,8 +1197,12 @@ function drawHeadcountChart(hc) {
 
 async function loadDashCharts() {
     loadDashAttendanceChart();
+    loadDashMissingChart();
     loadDashTWLGauge();
     loadDashHealthChart();
+    loadDashChronicChart();
+    loadDashOIChart();
+    loadDashDisciplineChart();
     loadDashWeatherSummary();
     loadDashNationalityChart();
 }
@@ -1084,11 +1213,112 @@ async function loadDashAttendanceChart() {
     const filterParams = getDashFilterParams();
     const params = new URLSearchParams();
     if (filterParams) filterParams.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
-    params.set('days', '7');
-    params.set('session', 'AM');
+    const mode = $('#dash-slider-mode')?.value || 'day';
+    params.set('days', mode === 'week' ? '13' : '7');
+    params.set('session', _sliderSession === 'PM' ? 'EV' : 'AM');
     const data = await api('/trends?' + params.toString());
     if (!data || !data.labels) return;
     drawLineChart(canvas, data.labels, data.values, data.total);
+}
+
+async function loadDashMissingChart() {
+    const canvas = $('#dash-missing-chart');
+    if (!canvas) return;
+    const selectedDate = getSliderDate();
+    const filterParams = getDashFilterParams();
+    const sess = _sliderSession === 'PM' ? 'EV' : 'AM';
+    const hcUrl = `/headcount?date=${selectedDate}` + (filterParams ? '&' + filterParams : '');
+    const hc = await api(hcUrl);
+    if (!hc || !hc.sites) return;
+
+    const projects = {};
+    hc.sites.forEach(s => {
+        const key = s.project;
+        if (!projects[key]) projects[key] = { present: 0, total: 0 };
+        projects[key].present += (s[sess] || s['AM'] || 0);
+        projects[key].total += (s.total_employees || 0);
+    });
+
+    const sorted = Object.entries(projects)
+        .map(([name, d]) => ({ name, present: d.present, missing: Math.max(0, d.total - d.present), total: d.total }))
+        .filter(d => d.total > 0)
+        .sort((a, b) => b.missing - a.missing)
+        .slice(0, 8);
+
+    if (!sorted.length) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No attendance data', w / 2 - 55, h / 2);
+        return;
+    }
+
+    drawStackedBarChart(canvas, sorted);
+}
+
+function drawStackedBarChart(canvas, data) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    if (!data.length) return;
+
+    const pad = { top: 22, right: 50, bottom: 10, left: 100 };
+    const barArea = h - pad.top - pad.bottom;
+    const barH = Math.min(18, (barArea / data.length) - 4);
+    const gap = Math.max(2, (barArea - barH * data.length) / Math.max(data.length - 1, 1));
+    const maxVal = Math.max(...data.map(d => d.total), 1);
+    const barWidth = w - pad.left - pad.right;
+
+    const totalMissing = data.reduce((s, d) => s + d.missing, 0);
+    const totalPresent = data.reduce((s, d) => s + d.present, 0);
+    ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 11px Inter'; ctx.textAlign = 'left';
+    ctx.fillText(`${totalMissing} missing`, pad.left, 14);
+    ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter';
+    ctx.fillText(`/ ${totalPresent + totalMissing} total`, pad.left + ctx.measureText(`${totalMissing} missing`).width + 4, 14);
+
+    data.forEach((d, i) => {
+        const y = pad.top + i * (barH + gap);
+        const presentW = (d.present / maxVal) * barWidth;
+        const missingW = (d.missing / maxVal) * barWidth;
+
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter'; ctx.textAlign = 'right';
+        const label = d.name.length > 14 ? d.name.substring(0, 13) + '…' : d.name;
+        ctx.fillText(label, pad.left - 6, y + barH / 2 + 3);
+
+        const r = 3;
+        if (presentW > 0) {
+            ctx.fillStyle = '#22c55e';
+            ctx.beginPath();
+            ctx.moveTo(pad.left + r, y);
+            ctx.lineTo(pad.left + presentW, y);
+            ctx.lineTo(pad.left + presentW, y + barH);
+            ctx.lineTo(pad.left + r, y + barH);
+            ctx.quadraticCurveTo(pad.left, y + barH, pad.left, y + barH - r);
+            ctx.lineTo(pad.left, y + r);
+            ctx.quadraticCurveTo(pad.left, y, pad.left + r, y);
+            ctx.fill();
+        }
+
+        if (missingW > 1) {
+            ctx.fillStyle = '#ef4444';
+            ctx.beginPath();
+            const mx = pad.left + presentW;
+            ctx.moveTo(mx, y);
+            ctx.lineTo(mx + missingW - r, y);
+            ctx.quadraticCurveTo(mx + missingW, y, mx + missingW, y + r);
+            ctx.lineTo(mx + missingW, y + barH - r);
+            ctx.quadraticCurveTo(mx + missingW, y + barH, mx + missingW - r, y + barH);
+            ctx.lineTo(mx, y + barH);
+            ctx.fill();
+        }
+
+        ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 9px Inter'; ctx.textAlign = 'left';
+        ctx.fillText(`${d.missing}`, pad.left + presentW + missingW + 4, y + barH / 2 + 3);
+    });
 }
 
 async function loadDashTWLGauge() {
@@ -1138,13 +1368,117 @@ async function loadDashHealthChart() {
     ], data.total);
 }
 
+async function loadDashChronicChart() {
+    const canvas = $('#dash-chronic-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const data = await api('/health-trends' + (filterParams ? '?' + filterParams : ''));
+    if (!data || !data.chronic_types || !data.chronic_types.length) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No chronic conditions recorded', w / 2 - 80, h / 2);
+        return;
+    }
+    const types = data.chronic_types.slice(0, 8);
+    const colors = ['#ef4444', '#f59e0b', '#8b5cf6', '#3b82f6', '#06b6d4', '#22c55e', '#ec4899', '#f97316'];
+    drawHorizontalBarChart(canvas, types.map(t => t.label), types.map(t => t.count), colors, data.chronic.has_chronic);
+}
+
+function drawHorizontalBarChart(canvas, labels, values, colors, total) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    if (!values.length) return;
+
+    const maxVal = Math.max(...values, 1);
+    const pad = { top: 20, right: 16, bottom: 10, left: 100 };
+    const barArea = h - pad.top - pad.bottom;
+    const barH = Math.min(20, (barArea / values.length) - 4);
+    const gap = (barArea - barH * values.length) / Math.max(values.length - 1, 1);
+
+    ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 12px Inter'; ctx.textAlign = 'left';
+    ctx.fillText(`${total || values.reduce((a, b) => a + b, 0)} total`, pad.left, 14);
+
+    labels.forEach((label, i) => {
+        const y = pad.top + i * (barH + gap);
+        const barW = (values[i] / maxVal) * (w - pad.left - pad.right);
+
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter'; ctx.textAlign = 'right';
+        const truncLabel = label.length > 14 ? label.substring(0, 13) + '…' : label;
+        ctx.fillText(truncLabel, pad.left - 6, y + barH / 2 + 3);
+
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.beginPath();
+        const r = 3;
+        ctx.moveTo(pad.left + r, y);
+        ctx.lineTo(pad.left + barW - r, y);
+        ctx.quadraticCurveTo(pad.left + barW, y, pad.left + barW, y + r);
+        ctx.lineTo(pad.left + barW, y + barH - r);
+        ctx.quadraticCurveTo(pad.left + barW, y + barH, pad.left + barW - r, y + barH);
+        ctx.lineTo(pad.left + r, y + barH);
+        ctx.quadraticCurveTo(pad.left, y + barH, pad.left, y + barH - r);
+        ctx.lineTo(pad.left, y + r);
+        ctx.quadraticCurveTo(pad.left, y, pad.left + r, y);
+        ctx.fill();
+
+        ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 10px Inter'; ctx.textAlign = 'left';
+        ctx.fillText(values[i], pad.left + barW + 5, y + barH / 2 + 3);
+    });
+}
+
+async function loadDashOIChart() {
+    const canvas = $('#dash-oi-chart');
+    if (!canvas) return;
+    const selectedDate = getSliderDate();
+    const filterParams = getDashFilterParams();
+    let url = `/observations/summary?date=${selectedDate}`;
+    if (filterParams) url += '&' + filterParams;
+    const data = await api(url);
+    if (!data || !data.total) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No observations for this day', w / 2 - 80, h / 2);
+        return;
+    }
+    const groupColors = {
+        'Safe Act': '#22c55e', 'Safe Condition': '#16a34a',
+        'Unsafe Act': '#f59e0b', 'Unsafe Condition': '#ef4444',
+        'Near Miss': '#f97316', 'HIPO': '#a855f7'
+    };
+    const segments = data.by_group.map(g => ({
+        label: g.observation_group, value: g.c, color: groupColors[g.observation_group] || '#94a3b8'
+    }));
+    drawDonutChart(canvas, segments, data.total);
+}
+
+async function loadDashDisciplineChart() {
+    const canvas = $('#dash-discipline-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const data = await api('/employees' + (filterParams ? '?' + filterParams : ''));
+    if (!Array.isArray(data) || !data.length) return;
+    const discCounts = {};
+    data.forEach(w => { const d = w.discipline || 'Unknown'; discCounts[d] = (discCounts[d] || 0) + 1; });
+    const sorted = Object.entries(discCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
+    drawHorizontalBarChart(canvas, sorted.map(s => s[0]), sorted.map(s => s[1]), colors, data.length);
+}
+
 async function loadDashWeatherSummary() {
     const el = $('#dash-weather-summary');
     if (!el) return;
     const coords = getWeatherCoords();
-    const today = new Date().toISOString().split('T')[0];
+    const selectedDate = getSliderDate();
     try {
-        const resp = await fetch(`https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&start_date=${today}&end_date=${today}&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,relative_humidity_2m_max,precipitation_sum&timezone=Asia%2FDubai`);
+        const resp = await fetch(`https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&start_date=${selectedDate}&end_date=${selectedDate}&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,relative_humidity_2m_max,precipitation_sum&timezone=Asia%2FDubai`);
         const w = await resp.json();
         if (!w.daily || !w.daily.time || !w.daily.time.length) throw new Error('No data');
         const d = w.daily;
@@ -1213,14 +1547,62 @@ function navigateToTab(tabName) {
     if (tab && tab.style.display !== 'none') tab.click();
 }
 
+async function loadAnomalies() {
+    const panel = $('#anomalies-panel');
+    const list = $('#anomalies-list');
+    const countBadge = $('#anomaly-count');
+    if (!panel || !list) return;
+
+    const selectedDate = getSliderDate();
+    const filterParams = getDashFilterParams();
+    let url = `/anomalies?date=${selectedDate}`;
+    if (filterParams) url += '&' + filterParams;
+
+    const data = await api(url);
+    if (!data || !data.anomalies || data.anomalies.length === 0) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = '';
+    if (countBadge) countBadge.textContent = data.count;
+
+    const catIcons = {
+        attendance: '👥', health: '🏥', safety: '⚠', twl: '🌡', cross: '🔗'
+    };
+
+    list.innerHTML = data.anomalies.map(a => `
+        <div class="anomaly-card sev-${a.severity}">
+            <div class="anomaly-icon cat-${a.category}">${catIcons[a.category] || '⚡'}</div>
+            <div class="anomaly-body">
+                <div class="anomaly-title">
+                    <span><span class="anomaly-sev-tag sev-tag-${a.severity}">${a.severity}</span>${esc(a.title)}</span>
+                    <span class="anomaly-metric">${esc(a.metric)}</span>
+                </div>
+                <div class="anomaly-detail">${esc(a.detail)}</div>
+            </div>
+        </div>
+    `).join('');
+
+    const toggleBtn = $('#anomalies-toggle');
+    if (toggleBtn && !toggleBtn._bound) {
+        toggleBtn._bound = true;
+        toggleBtn.addEventListener('click', () => {
+            const isHidden = list.style.display === 'none';
+            list.style.display = isHidden ? '' : 'none';
+            toggleBtn.textContent = isHidden ? 'Collapse' : 'Expand';
+        });
+    }
+}
+
 async function loadPersonnel(view = 'present') {
-    const d = $('#dash-date').value || new Date().toISOString().split('T')[0];
+    const d = getSliderDate();
     const personnelDateEl = $('#personnel-date-label');
     if (personnelDateEl) personnelDateEl.textContent = formatHeadcountDate(d) ? ` (${formatHeadcountDate(d)})` : '';
     const list = $('#personnel-list');
     list.innerHTML = '<div class="spinner"></div>';
 
-    const sess = $('#dash-session')?.value || 'AM';
+    const sess = _sliderSession === 'PM' ? 'EV' : 'AM';
     const filterParams = getDashFilterParams();
     let url = `${view === 'present' ? '/headcount/detail' : '/headcount/missing'}?date=${d}&session=${sess}` + (filterParams ? '&' + filterParams : '');
 
@@ -2310,6 +2692,7 @@ function initTabs() {
             else if (target === 'trends') { initTrends(); }
             else if (target === 'health') { initHealthTrends(); }
             else if (target === 'twl') { initTWLTab(); }
+            else if (target === 'oi') { initOITab(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });
@@ -2321,11 +2704,7 @@ function initTabs() {
         if (card) navigateToTab(card.dataset.navigate);
     });
 
-    $('#dash-date').addEventListener('change', refreshDashboard);
-    $('#dash-session')?.addEventListener('change', () => {
-        const view = document.querySelector('.btn-toggle.active')?.dataset?.view || 'present';
-        loadPersonnel(view);
-    });
+    $('#dash-date')?.addEventListener('change', refreshDashboard);
 
     $$('.btn-toggle').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -2351,10 +2730,10 @@ function initTabs() {
     });
 
     $('#btn-export')?.addEventListener('click', async () => {
-        const d = $('#dash-date')?.value || new Date().toISOString().split('T')[0];
+        const exportDate = getSliderDate();
         try {
             const { token: dlToken } = await api('/export/download-token', { method: 'POST' });
-            let url = `/api/export/attendance?date=${d}&dl_token=${dlToken}`;
+            let url = `/api/export/attendance?date=${exportDate}&dl_token=${dlToken}`;
             if ($('#dash-project')?.value) url += `&project_id=${$('#dash-project').value}`;
             window.open(url, '_blank');
         } catch (e) {
@@ -2644,6 +3023,184 @@ function renderTWLReadings(readings) {
 }
 
 // ============================================================
+// O&I (Observation & Intervention)
+// ============================================================
+let _oiInited = false;
+
+async function initOITab() {
+    if (!_oiInited) {
+        _oiInited = true;
+        const meta = await api('/observations/meta');
+        if (!meta) return;
+
+        const oiGroup = $('#oi-group');
+        const oiType = $('#oi-type');
+        const oiSeverity = $('#oi-severity');
+        const oiRisk = $('#oi-risk');
+        const oiDisc = $('#oi-observer-disc');
+        const oiEmpType = $('#oi-emp-type');
+        const oiDiv = $('#oi-division');
+        const oiArea = $('#oi-area');
+        const oiProj = $('#oi-project');
+
+        if (oiGroup) oiGroup.innerHTML = '<option value="">Select</option>' + meta.observation_groups.map(g => `<option value="${g}">${esc(g)}</option>`).join('');
+        if (oiType) oiType.innerHTML = '<option value="">Select</option>' + meta.observation_types.map(t => `<option value="${t}">${esc(t)}</option>`).join('');
+        if (oiEmpType) oiEmpType.innerHTML = '<option value="">Select</option>' + meta.employee_types.map(t => `<option value="${t}">${esc(t)}</option>`).join('');
+
+        const disciplines = ['Civil', 'Mechanical', 'Electrical', 'Piping', 'Instrumentation', 'HSE', 'Structural', 'Welding', 'Painting', 'Insulation', 'Scaffolding', 'QA/QC', 'Rigging', 'Operations', 'Logistics'];
+        if (oiDisc) oiDisc.innerHTML = '<option value="">Select</option>' + disciplines.map(d => `<option value="${d}">${d}</option>`).join('');
+
+        oiGroup?.addEventListener('change', () => {
+            const isSafe = oiGroup.value === 'Safe Act' || oiGroup.value === 'Safe Condition';
+            const sevOpts = isSafe ? meta.severity_safe : meta.severity_unsafe;
+            const riskOpts = isSafe ? meta.risk_safe : meta.risk_unsafe;
+            if (oiSeverity) oiSeverity.innerHTML = '<option value="">Select</option>' + sevOpts.map(s => `<option value="${s}">${s}</option>`).join('');
+            if (oiRisk) oiRisk.innerHTML = '<option value="">Select</option>' + riskOpts.map(r => `<option value="${r}">${r}</option>`).join('');
+        });
+
+        const [divs, areas] = await Promise.all([api('/divisions'), api('/areas')]);
+        if (oiDiv && Array.isArray(divs)) oiDiv.innerHTML = '<option value="">Select</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        if (oiArea && Array.isArray(areas)) oiArea.innerHTML = '<option value="">Select</option>' + areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+
+        oiDiv?.addEventListener('change', async () => {
+            oiArea.innerHTML = '<option value="">Select</option>';
+            oiProj.innerHTML = '<option value="">Select</option>';
+            if (oiDiv.value) {
+                const a = await api(`/areas?division_id=${oiDiv.value}`);
+                if (Array.isArray(a)) oiArea.innerHTML = '<option value="">Select</option>' + a.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+            }
+        });
+        oiArea?.addEventListener('change', async () => {
+            oiProj.innerHTML = '<option value="">Select</option>';
+            if (oiArea.value) await loadProjects(oiProj, false, oiArea.value, null);
+        });
+
+        const oiFilterDiv = $('#oi-filter-division');
+        if (oiFilterDiv && Array.isArray(divs)) oiFilterDiv.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        oiFilterDiv?.addEventListener('change', loadOIData);
+        $('#oi-filter-days')?.addEventListener('change', loadOIData);
+
+        $('#oi-date').value = new Date().toISOString().split('T')[0];
+        $('#oi-entry-form')?.addEventListener('submit', submitObservation);
+    }
+    loadOIData();
+}
+
+async function submitObservation(e) {
+    e.preventDefault();
+    const group = $('#oi-group')?.value;
+    if (!group) return toast('Select observation group', 'error');
+    const body = {
+        observation_date: $('#oi-date')?.value || new Date().toISOString().split('T')[0],
+        division_id: $('#oi-division')?.value || null,
+        area_id: $('#oi-area')?.value || null,
+        project_id: $('#oi-project')?.value || null,
+        observer_name: $('#oi-observer-name')?.value || '',
+        observer_designation: $('#oi-observer-desg')?.value || '',
+        observer_discipline: $('#oi-observer-disc')?.value || '',
+        employee_type: $('#oi-emp-type')?.value || '',
+        observation_group: group,
+        observation_type: $('#oi-type')?.value || '',
+        potential_severity: $('#oi-severity')?.value || '',
+        risk_rating: $('#oi-risk')?.value || '',
+        observation_text: $('#oi-text')?.value || '',
+        corrective_action: $('#oi-action')?.value || '',
+    };
+    const res = await api('/observations', { method: 'POST', body: JSON.stringify(body) });
+    if (res.success) {
+        toast('Observation recorded', 'success');
+        $('#oi-entry-form').reset();
+        $('#oi-date').value = new Date().toISOString().split('T')[0];
+        loadOIData();
+    } else {
+        toast(res.message || 'Failed', 'error');
+    }
+}
+
+async function loadOIData() {
+    const division = $('#oi-filter-division')?.value;
+    const days = $('#oi-filter-days')?.value || '30';
+    let qp = `days=${days}`;
+    if (division) qp += `&division_id=${division}`;
+
+    const [summary, readings] = await Promise.all([
+        api('/observations/summary?' + qp),
+        api('/observations?' + qp)
+    ]);
+
+    renderOISummary(summary);
+    renderOICharts(summary);
+    renderOIReadings(readings);
+}
+
+function renderOISummary(data) {
+    const el = $('#oi-summary-cards');
+    if (!el || !data) return;
+    el.innerHTML = `
+        <div class="stat-card"><div class="stat-value blue">${data.total}</div><div class="stat-label">Total Observations</div></div>
+        <div class="stat-card"><div class="stat-value green">${data.safe}</div><div class="stat-label">Safe</div></div>
+        <div class="stat-card"><div class="stat-value orange">${data.unsafe}</div><div class="stat-label">Unsafe / Near Miss / HIPO</div></div>
+        <div class="stat-card"><div class="stat-value">${data.by_type?.length || 0}</div><div class="stat-label">Observation Types</div></div>`;
+}
+
+function renderOICharts(data) {
+    if (!data || !data.total) return;
+    const groupColors = {
+        'Safe Act': '#22c55e', 'Safe Condition': '#16a34a',
+        'Unsafe Act': '#f59e0b', 'Unsafe Condition': '#ef4444',
+        'Near Miss': '#f97316', 'HIPO': '#a855f7'
+    };
+
+    const groupCanvas = $('#oi-group-chart');
+    if (groupCanvas && data.by_group) {
+        drawDonutChart(groupCanvas, data.by_group.map(g => ({
+            label: g.observation_group, value: g.c, color: groupColors[g.observation_group] || '#94a3b8'
+        })), data.total);
+    }
+
+    const typeCanvas = $('#oi-type-chart');
+    if (typeCanvas && data.by_type) {
+        const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316', '#14b8a6', '#64748b'];
+        drawHorizontalBarChart(typeCanvas, data.by_type.map(t => t.observation_type), data.by_type.map(t => t.c), colors, data.total);
+    }
+
+    const sevCanvas = $('#oi-severity-chart');
+    if (sevCanvas && data.by_severity) {
+        const sevColors = { 'N/A': '#94a3b8', 'Low': '#22c55e', 'Medium': '#f59e0b', 'High': '#ef4444', 'Critical': '#a855f7' };
+        drawDonutChart(sevCanvas, data.by_severity.map(s => ({
+            label: s.potential_severity || 'N/A', value: s.c, color: sevColors[s.potential_severity] || '#94a3b8'
+        })), data.total);
+    }
+}
+
+function renderOIReadings(readings) {
+    const el = $('#oi-readings-list');
+    if (!el) return;
+    if (!Array.isArray(readings) || !readings.length) {
+        el.innerHTML = '<div class="empty-state">No observations in this period</div>';
+        return;
+    }
+    const groupBadge = (g) => {
+        const cls = g === 'HIPO' ? 'hipo' : g === 'Near Miss' ? 'near-miss' : (g || '').includes('Safe') ? 'safe' : 'unsafe';
+        return `<span class="oi-badge oi-badge-${cls}">${esc(g)}</span>`;
+    };
+    el.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>Date</th><th>Group</th><th>Type</th><th>Severity</th><th>Risk</th>
+        <th>Observer</th><th>Division</th><th>Outcome</th>
+        </tr></thead><tbody>` +
+        readings.slice(0, 200).map(r => `<tr>
+            <td>${formatHeadcountDate(r.observation_date)}</td>
+            <td>${groupBadge(r.observation_group)}</td>
+            <td>${esc(r.observation_type || '—')}</td>
+            <td>${esc(r.potential_severity || '—')}</td>
+            <td>${esc(r.risk_rating || '—')}</td>
+            <td>${esc(r.observer_name || '—')}</td>
+            <td>${esc(r.division_name || '—')}</td>
+            <td>${esc(r.outcome || '—')}</td>
+        </tr>`).join('') + '</tbody></table>';
+}
+
+// ============================================================
 // BOOT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -2653,7 +3210,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initImportModal();
     initSetup();
     initTabs();
-    $('#dash-date').value = new Date().toISOString().split('T')[0];
+    const dashDateEl = $('#dash-date');
+    if (dashDateEl) dashDateEl.value = new Date().toISOString().split('T')[0];
 
     if (state.token && state.user) {
         showApp();

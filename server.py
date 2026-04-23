@@ -350,6 +350,29 @@ def init_db():
                 recorded_by INTEGER REFERENCES users(id),
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''',
+            '''CREATE TABLE IF NOT EXISTS observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                division_id INTEGER REFERENCES divisions(id),
+                area_id INTEGER REFERENCES areas(id),
+                project_id INTEGER REFERENCES projects(id),
+                observation_date TEXT NOT NULL,
+                observer_name TEXT,
+                observer_designation TEXT,
+                observer_discipline TEXT,
+                observer_company TEXT,
+                employee_type TEXT,
+                observation_group TEXT NOT NULL,
+                observation_type TEXT,
+                potential_severity TEXT,
+                risk_rating TEXT,
+                observation_text TEXT,
+                corrective_action TEXT,
+                intervention TEXT,
+                outcome TEXT,
+                remarks TEXT,
+                recorded_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         ]
 
@@ -374,6 +397,9 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_uda_user ON user_division_access(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_twl_date ON twl_readings(reading_date)',
             'CREATE INDEX IF NOT EXISTS idx_twl_area ON twl_readings(area_id)',
+            'CREATE INDEX IF NOT EXISTS idx_obs_date ON observations(observation_date)',
+            'CREATE INDEX IF NOT EXISTS idx_obs_division ON observations(division_id)',
+            'CREATE INDEX IF NOT EXISTS idx_obs_group ON observations(observation_group)',
         ]
         for sql in indexes:
             try:
@@ -2282,6 +2308,480 @@ def api_twl_summary():
         'trend': [dict(r) for r in trend],
         'high_risk_days': high_risk_days,
         'zone_definitions': TWL_ZONES,
+    })
+
+
+# ============================================================
+# Anomaly Detection Engine
+# ============================================================
+
+@app.route('/api/anomalies')
+@require_auth
+def api_anomalies():
+    """Detect anomalies across attendance, health, O&I, TWL, and cross-domain patterns."""
+    target_date = request.args.get('date', date.today().isoformat())
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+
+    conn = get_db()
+    anomalies = []
+    try:
+        # Scope filters
+        emp_where = 'WHERE e.active = 1'
+        emp_params = []
+        if project_id:
+            emp_where += ' AND e.project_id = ?'
+            emp_params.append(project_id)
+        elif area_id:
+            emp_where += ' AND p.area_id = ?'
+            emp_params.append(area_id)
+        elif division_id:
+            emp_where += ' AND ar.division_id = ?'
+            emp_params.append(division_id)
+
+        emp_base = f'''FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            {emp_where}'''
+
+        total_emp = db_fetchone(conn, f'SELECT COUNT(*) as c {emp_base}', emp_params)['c']
+
+        # ── 1. ATTENDANCE ANOMALIES ──
+
+        # Today's attendance
+        for sess_name, sess_label in [('AM', '9 AM'), ('EV', '7 PM')]:
+            att_q = f'''SELECT COUNT(DISTINCT att.employee_no) as c
+                FROM attendance att
+                JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+                LEFT JOIN projects p ON p.id = att.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE att.scan_date = ? AND att.session = ? AND e.active = 1'''
+            att_p = [target_date, sess_name]
+            if project_id:
+                att_q += ' AND att.project_id = ?'
+                att_p.append(project_id)
+            elif area_id:
+                att_q += ' AND p.area_id = ?'
+                att_p.append(area_id)
+            elif division_id:
+                att_q += ' AND ar.division_id = ?'
+                att_p.append(division_id)
+            today_count = db_fetchone(conn, att_q, att_p)['c']
+
+            # 7-day rolling average
+            d7 = (date.fromisoformat(target_date) - timedelta(days=7)).isoformat()
+            avg_q = att_q.replace('att.scan_date = ?', 'att.scan_date >= ? AND att.scan_date < ?')
+            avg_p = [d7, target_date, sess_name] + att_p[2:]
+            avg_row = db_fetchone(conn, avg_q.replace('COUNT(DISTINCT att.employee_no) as c', 'COUNT(DISTINCT att.employee_no || att.scan_date) as c'), avg_p)
+            avg_7d = (avg_row['c'] / 7) if avg_row else 0
+
+            if total_emp > 0:
+                rate = (today_count / total_emp) * 100
+                if rate < 50 and today_count > 0:
+                    anomalies.append({
+                        'category': 'attendance', 'severity': 'high',
+                        'title': f'Low {sess_label} attendance',
+                        'detail': f'Only {today_count}/{total_emp} ({rate:.0f}%) scanned at {sess_label}',
+                        'metric': f'{rate:.0f}%'
+                    })
+                elif rate < 75 and today_count > 0:
+                    anomalies.append({
+                        'category': 'attendance', 'severity': 'medium',
+                        'title': f'Below-average {sess_label} attendance',
+                        'detail': f'{today_count}/{total_emp} ({rate:.0f}%) scanned — below 75% threshold',
+                        'metric': f'{rate:.0f}%'
+                    })
+
+            if avg_7d > 0 and today_count > 0 and today_count < avg_7d * 0.75:
+                drop_pct = ((avg_7d - today_count) / avg_7d) * 100
+                anomalies.append({
+                    'category': 'attendance', 'severity': 'high',
+                    'title': f'{sess_label} attendance drop vs 7-day average',
+                    'detail': f'{today_count} present vs {avg_7d:.0f} avg ({drop_pct:.0f}% drop)',
+                    'metric': f'-{drop_pct:.0f}%'
+                })
+
+        # AM vs PM gap
+        am_q = f'''SELECT COUNT(DISTINCT att.employee_no) as c
+            FROM attendance att JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+            LEFT JOIN projects p ON p.id = att.project_id LEFT JOIN areas ar ON ar.id = p.area_id
+            WHERE att.scan_date = ? AND att.session = 'AM' AND e.active = 1'''
+        ev_q = am_q.replace("'AM'", "'EV'")
+        am_p = [target_date]
+        if project_id:
+            am_q += ' AND att.project_id = ?'
+            ev_q += ' AND att.project_id = ?'
+            am_p.append(project_id)
+        elif area_id:
+            am_q += ' AND p.area_id = ?'
+            ev_q += ' AND p.area_id = ?'
+            am_p.append(area_id)
+        elif division_id:
+            am_q += ' AND ar.division_id = ?'
+            ev_q += ' AND ar.division_id = ?'
+            am_p.append(division_id)
+        am_count = db_fetchone(conn, am_q, am_p)['c']
+        ev_count = db_fetchone(conn, ev_q, am_p)['c']
+        if am_count > 10 and ev_count > 0 and ev_count < am_count * 0.7:
+            gap_pct = ((am_count - ev_count) / am_count) * 100
+            anomalies.append({
+                'category': 'attendance', 'severity': 'medium',
+                'title': 'AM-to-PM attendance drop',
+                'detail': f'{am_count} present at 9AM but only {ev_count} at 7PM ({gap_pct:.0f}% left early)',
+                'metric': f'-{gap_pct:.0f}%'
+            })
+
+        # Per-project low attendance
+        proj_att = db_fetchall(conn, f'''SELECT p.name as pname, COUNT(DISTINCT att.employee_no) as present,
+            (SELECT COUNT(*) FROM employees e2 WHERE e2.project_id = p.id AND e2.active = 1) as total
+            FROM attendance att
+            JOIN projects p ON p.id = att.project_id
+            WHERE att.scan_date = ? AND att.session = 'AM'
+            GROUP BY p.id HAVING total > 5 AND present < total * 0.4
+            ORDER BY (CAST(present AS REAL) / total) ASC LIMIT 5''', [target_date])
+        for pa in proj_att:
+            pct = (pa['present'] / pa['total'] * 100) if pa['total'] else 0
+            anomalies.append({
+                'category': 'attendance', 'severity': 'high',
+                'title': f'Critical attendance: {pa["pname"]}',
+                'detail': f'Only {pa["present"]}/{pa["total"]} ({pct:.0f}%) present at 9 AM',
+                'metric': f'{pct:.0f}%'
+            })
+
+        # ── 2. HEALTH ANOMALIES ──
+
+        unfit = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND LOWER(e.medical_result) LIKE '%unfit%'", emp_params)['c']
+        if unfit > 0:
+            anomalies.append({
+                'category': 'health', 'severity': 'high',
+                'title': f'{unfit} worker{"s" if unfit > 1 else ""} marked UNFIT',
+                'detail': 'Medically unfit workers still in active roster — immediate review required',
+                'metric': str(unfit)
+            })
+
+        overdue = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.next_medical_due != '' AND e.next_medical_due IS NOT NULL AND e.next_medical_due < ?", emp_params + [target_date])['c']
+        if overdue > 10:
+            anomalies.append({
+                'category': 'health', 'severity': 'high',
+                'title': f'{overdue} overdue medical exams',
+                'detail': 'Workers with expired medical clearance — schedule exams urgently',
+                'metric': str(overdue)
+            })
+        elif overdue > 0:
+            anomalies.append({
+                'category': 'health', 'severity': 'medium',
+                'title': f'{overdue} overdue medical exam{"s" if overdue > 1 else ""}',
+                'detail': 'Workers due for medical re-examination',
+                'metric': str(overdue)
+            })
+
+        chronic = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT IN ('nil','none','no','n/a','')", emp_params)['c']
+        chronic_untreated = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT IN ('nil','none','no','n/a','') AND (e.chronic_treated IS NULL OR e.chronic_treated = '' OR LOWER(e.chronic_treated) NOT LIKE '%yes%')", emp_params)['c']
+        if chronic_untreated > 5:
+            anomalies.append({
+                'category': 'health', 'severity': 'high',
+                'title': f'{chronic_untreated} untreated chronic conditions',
+                'detail': f'Out of {chronic} workers with chronic conditions, {chronic_untreated} are not confirmed under treatment',
+                'metric': str(chronic_untreated)
+            })
+
+        # ── 3. O&I (SAFETY) ANOMALIES ──
+
+        d7_start = (date.fromisoformat(target_date) - timedelta(days=7)).isoformat()
+        obs_where = "WHERE o.observation_date = ?"
+        obs_params_day = [target_date]
+        obs_where_7d = "WHERE o.observation_date >= ? AND o.observation_date <= ?"
+        obs_params_7d = [d7_start, target_date]
+        if division_id:
+            obs_where += ' AND o.division_id = ?'
+            obs_where_7d += ' AND o.division_id = ?'
+            obs_params_day.append(division_id)
+            obs_params_7d.append(division_id)
+
+        # HIPO events today
+        hipo = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where} AND o.observation_group = 'HIPO'", obs_params_day)['c']
+        if hipo > 0:
+            anomalies.append({
+                'category': 'safety', 'severity': 'critical',
+                'title': f'{hipo} HIPO event{"s" if hipo > 1 else ""} recorded',
+                'detail': 'High Potential Incident/Observation — requires immediate management attention',
+                'metric': str(hipo)
+            })
+
+        # Near misses today
+        near_miss = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where} AND o.observation_group = 'Near Miss'", obs_params_day)['c']
+        if near_miss >= 3:
+            anomalies.append({
+                'category': 'safety', 'severity': 'high',
+                'title': f'{near_miss} near misses today',
+                'detail': 'Elevated near-miss count — investigate root causes and patterns',
+                'metric': str(near_miss)
+            })
+
+        # Unsafe observation spike vs 7-day average
+        unsafe_today = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where} AND o.observation_group NOT IN ('Safe Act','Safe Condition')", obs_params_day)['c']
+        unsafe_7d = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where_7d} AND o.observation_group NOT IN ('Safe Act','Safe Condition')", obs_params_7d)['c']
+        unsafe_avg = unsafe_7d / 7 if unsafe_7d else 0
+        if unsafe_avg > 0 and unsafe_today > unsafe_avg * 1.5 and unsafe_today >= 3:
+            anomalies.append({
+                'category': 'safety', 'severity': 'high',
+                'title': 'Unsafe observation spike',
+                'detail': f'{unsafe_today} unsafe observations today vs {unsafe_avg:.1f} daily average — {((unsafe_today / unsafe_avg - 1) * 100):.0f}% above normal',
+                'metric': f'+{((unsafe_today / unsafe_avg - 1) * 100):.0f}%'
+            })
+
+        # Repeat observation types (same type appearing 3+ times in 7 days at same project)
+        repeat_types = db_fetchall(conn, f'''SELECT o.observation_type, p.name as pname, COUNT(*) as c
+            FROM observations o LEFT JOIN projects p ON p.id = o.project_id
+            {obs_where_7d} AND o.observation_group NOT IN ('Safe Act','Safe Condition')
+            AND o.observation_type IS NOT NULL AND o.observation_type != ''
+            GROUP BY o.observation_type, o.project_id HAVING c >= 3
+            ORDER BY c DESC LIMIT 3''', obs_params_7d)
+        for rt in repeat_types:
+            anomalies.append({
+                'category': 'safety', 'severity': 'medium',
+                'title': f'Recurring: {rt["observation_type"]}',
+                'detail': f'Observed {rt["c"]} times in 7 days{" at " + rt["pname"] if rt["pname"] else ""} — systemic issue likely',
+                'metric': f'{rt["c"]}x'
+            })
+
+        # Safe-to-unsafe ratio declining
+        d14_start = (date.fromisoformat(target_date) - timedelta(days=14)).isoformat()
+        week1_safe = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o WHERE o.observation_date >= ? AND o.observation_date < ? AND o.observation_group IN ('Safe Act','Safe Condition')", [d14_start, d7_start])['c']
+        week1_total = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o WHERE o.observation_date >= ? AND o.observation_date < ?", [d14_start, d7_start])['c']
+        week2_safe = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o WHERE o.observation_date >= ? AND o.observation_date <= ? AND o.observation_group IN ('Safe Act','Safe Condition')", [d7_start, target_date])['c']
+        week2_total = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o WHERE o.observation_date >= ? AND o.observation_date <= ?", [d7_start, target_date])['c']
+        if week1_total > 5 and week2_total > 5:
+            ratio1 = week1_safe / week1_total
+            ratio2 = week2_safe / week2_total
+            if ratio2 < ratio1 * 0.8:
+                anomalies.append({
+                    'category': 'safety', 'severity': 'medium',
+                    'title': 'Safety ratio declining',
+                    'detail': f'Safe observations dropped from {ratio1 * 100:.0f}% to {ratio2 * 100:.0f}% week-over-week',
+                    'metric': f'{ratio2 * 100:.0f}%'
+                })
+
+        # ── 4. TWL ANOMALIES ──
+
+        twl_high = db_fetchall(conn, "SELECT t.twl_value, t.risk_zone, a.name as area_name FROM twl_readings t LEFT JOIN areas a ON a.id = t.area_id WHERE t.reading_date = ? AND t.risk_zone = 'high' ORDER BY t.twl_value ASC LIMIT 3", [target_date])
+        for tr in twl_high:
+            anomalies.append({
+                'category': 'twl', 'severity': 'critical',
+                'title': f'High-risk TWL: {tr["twl_value"]}',
+                'detail': f'TWL reading at {tr["area_name"] or "unknown area"} — work-rest cycles mandatory, restrict heavy work',
+                'metric': str(tr['twl_value'])
+            })
+
+        twl_medium = db_fetchone(conn, "SELECT COUNT(*) as c FROM twl_readings WHERE reading_date = ? AND risk_zone = 'medium'", [target_date])['c']
+        if twl_medium > 0 and not twl_high:
+            anomalies.append({
+                'category': 'twl', 'severity': 'medium',
+                'title': f'{twl_medium} medium-risk TWL reading{"s" if twl_medium > 1 else ""}',
+                'detail': 'Cautionary conditions — ensure hydration protocols and paced work schedules',
+                'metric': str(twl_medium)
+            })
+
+        # ── 5. CROSS-DOMAIN CORRELATIONS ──
+
+        # High TWL + high attendance = heat stress risk
+        if twl_high and am_count > total_emp * 0.7 and total_emp > 20:
+            anomalies.append({
+                'category': 'cross', 'severity': 'critical',
+                'title': 'Heat stress risk — high TWL + full attendance',
+                'detail': f'{am_count} workers on site during high-risk TWL conditions — consider stand-down or shift reduction',
+                'metric': '⚠'
+            })
+
+        # Unsafe spike at specific project with low attendance (possible safety culture issue)
+        if unsafe_today >= 3:
+            unsafe_by_proj = db_fetchall(conn, f'''SELECT p.name as pname, COUNT(*) as c
+                FROM observations o LEFT JOIN projects p ON p.id = o.project_id
+                {obs_where} AND o.observation_group NOT IN ('Safe Act','Safe Condition')
+                GROUP BY o.project_id HAVING c >= 2 ORDER BY c DESC LIMIT 2''', obs_params_day)
+            for up in unsafe_by_proj:
+                if up['pname']:
+                    anomalies.append({
+                        'category': 'cross', 'severity': 'high',
+                        'title': f'Safety hotspot: {up["pname"]}',
+                        'detail': f'{up["c"]} unsafe observations concentrated at this project today',
+                        'metric': str(up['c'])
+                    })
+
+    finally:
+        conn.close()
+
+    # Sort: critical first, then high, medium, low
+    severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+    anomalies.sort(key=lambda a: severity_order.get(a['severity'], 9))
+
+    return jsonify({
+        'date': target_date,
+        'count': len(anomalies),
+        'anomalies': anomalies,
+    })
+
+
+# ============================================================
+# O&I Observations
+# ============================================================
+
+OI_OBSERVATION_TYPES = [
+    'Hot Work', 'Safety Devices or Guards', 'Procedures',
+    'Personal Protective Equipment', 'Tools Equipment', 'Lifting',
+    'Health, Hygiene, Food or Water', 'Safety Signage and Demarcation',
+    'Emergency Response', 'Other', 'Housekeeping', 'Driving/Vehicles',
+    'Excavation', 'Line of Fire or Pinch Points', 'Working at Height',
+    'Workplace Environment', 'Work Planning & Authorisation', 'Supervision',
+    'Situational Awareness', 'Toxic/Flammable Gas', 'Confined Space',
+    'Isolation/Lockout', 'Improvement Opportunity', 'Manual/Mechanical Handling',
+    'Security',
+]
+
+OI_OBSERVATION_GROUPS = ['Safe Act', 'Safe Condition', 'Unsafe Act', 'Unsafe Condition', 'Near Miss', 'HIPO']
+OI_SEVERITY_UNSAFE = ['Low', 'Medium', 'High', 'Critical']
+OI_SEVERITY_SAFE = ['N/A']
+OI_RISK_UNSAFE = ['Low', 'Medium', 'High']
+OI_RISK_SAFE = ['N/A']
+OI_EMPLOYEE_TYPES = ['AON Direct Hire', 'PMC', 'Contractor']
+
+
+@app.route('/api/observations/meta')
+@require_auth
+def api_observations_meta():
+    return jsonify({
+        'observation_types': OI_OBSERVATION_TYPES,
+        'observation_groups': OI_OBSERVATION_GROUPS,
+        'severity_unsafe': OI_SEVERITY_UNSAFE,
+        'severity_safe': OI_SEVERITY_SAFE,
+        'risk_unsafe': OI_RISK_UNSAFE,
+        'risk_safe': OI_RISK_SAFE,
+        'employee_types': OI_EMPLOYEE_TYPES,
+    })
+
+
+@app.route('/api/observations', methods=['POST'])
+@require_auth
+def api_observation_create():
+    data = request.json or {}
+    obs_date = data.get('observation_date', date.today().isoformat())
+    obs_group = data.get('observation_group', '').strip()
+    if not obs_group:
+        return jsonify({'success': False, 'message': 'Observation group required'}), 400
+    conn = get_db()
+    try:
+        db_execute(conn, '''INSERT INTO observations
+            (division_id, area_id, project_id, observation_date, observer_name,
+             observer_designation, observer_discipline, observer_company, employee_type,
+             observation_group, observation_type, potential_severity, risk_rating,
+             observation_text, corrective_action, intervention, outcome, remarks, recorded_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (data.get('division_id'), data.get('area_id'), data.get('project_id'),
+             obs_date, data.get('observer_name', ''), data.get('observer_designation', ''),
+             data.get('observer_discipline', ''), data.get('observer_company', ''),
+             data.get('employee_type', ''), obs_group, data.get('observation_type', ''),
+             data.get('potential_severity', ''), data.get('risk_rating', ''),
+             data.get('observation_text', ''), data.get('corrective_action', ''),
+             data.get('intervention', ''), data.get('outcome', ''),
+             data.get('remarks', ''), request.user['id']))
+        conn.commit()
+    finally:
+        conn.close()
+    audit(request.user['id'], 'observation_recorded', f'{obs_group}: {data.get("observation_type", "")}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/observations')
+@require_auth
+def api_observations_list():
+    obs_date = request.args.get('date', '')
+    days = request.args.get('days', type=int)
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+
+    conn = get_db()
+    try:
+        query = '''SELECT o.*, d.name as division_name, a.name as area_name, p.name as project_name
+            FROM observations o
+            LEFT JOIN divisions d ON d.id = o.division_id
+            LEFT JOIN areas a ON a.id = o.area_id
+            LEFT JOIN projects p ON p.id = o.project_id
+            WHERE 1=1'''
+        params = []
+        if obs_date:
+            query += ' AND o.observation_date = ?'
+            params.append(obs_date)
+        elif days:
+            start = (date.today() - timedelta(days=days)).isoformat()
+            query += ' AND o.observation_date >= ?'
+            params.append(start)
+        if division_id:
+            query += ' AND o.division_id = ?'
+            params.append(division_id)
+        if area_id:
+            query += ' AND o.area_id = ?'
+            params.append(area_id)
+        if project_id:
+            query += ' AND o.project_id = ?'
+            params.append(project_id)
+        query += ' ORDER BY o.observation_date DESC, o.created_at DESC LIMIT 500'
+        rows = db_fetchall(conn, query, params)
+    finally:
+        conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/observations/summary')
+@require_auth
+def api_observations_summary():
+    """Summary for dashboard: totals by group, type, severity for a date range."""
+    obs_date = request.args.get('date', '')
+    days = request.args.get('days', 30, type=int)
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+
+    conn = get_db()
+    try:
+        where = 'WHERE 1=1'
+        params = []
+        if obs_date:
+            where += ' AND o.observation_date = ?'
+            params.append(obs_date)
+        else:
+            start = (date.today() - timedelta(days=days)).isoformat()
+            where += ' AND o.observation_date >= ?'
+            params.append(start)
+        if division_id:
+            where += ' AND o.division_id = ?'
+            params.append(division_id)
+        if area_id:
+            where += ' AND o.area_id = ?'
+            params.append(area_id)
+        if project_id:
+            where += ' AND o.project_id = ?'
+            params.append(project_id)
+
+        base = f'FROM observations o {where}'
+        total = db_fetchone(conn, f'SELECT COUNT(*) as c {base}', params)['c']
+        by_group = db_fetchall(conn, f'SELECT observation_group, COUNT(*) as c {base} GROUP BY observation_group ORDER BY c DESC', params)
+        by_type = db_fetchall(conn, f'SELECT observation_type, COUNT(*) as c {base} AND observation_type IS NOT NULL AND observation_type != "" GROUP BY observation_type ORDER BY c DESC LIMIT 10', params)
+        by_severity = db_fetchall(conn, f'SELECT potential_severity, COUNT(*) as c {base} AND potential_severity IS NOT NULL AND potential_severity != "" GROUP BY potential_severity ORDER BY c DESC', params)
+        by_date = db_fetchall(conn, f'SELECT observation_date, COUNT(*) as c {base} GROUP BY observation_date ORDER BY observation_date', params)
+        safe_count = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND observation_group IN ('Safe Act','Safe Condition')", params)['c']
+        unsafe_count = total - safe_count
+    finally:
+        conn.close()
+    return jsonify({
+        'total': total,
+        'safe': safe_count,
+        'unsafe': unsafe_count,
+        'by_group': [dict(r) for r in by_group],
+        'by_type': [dict(r) for r in by_type],
+        'by_severity': [dict(r) for r in by_severity],
+        'by_date': [dict(r) for r in by_date],
     })
 
 
