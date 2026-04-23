@@ -1799,12 +1799,19 @@ def health():
             dem = dem_row['c'] if isinstance(dem_row, dict) else dem_row[0]
             total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees")
             total_emp = total_row['c'] if isinstance(total_row, dict) else total_row[0]
+            att_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM attendance")
+            att = att_row['c'] if isinstance(att_row, dict) else att_row[0]
+            obs_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM observations")
+            obs = obs_row['c'] if isinstance(obs_row, dict) else obs_row[0]
+            twl_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM twl_readings")
+            twl = twl_row['c'] if isinstance(twl_row, dict) else twl_row[0]
             sample = db_fetchone(conn, "SELECT employee_no, name FROM employees LIMIT 1")
             sample_data = dict(sample) if sample else None
             return jsonify({
                 'status': 'ok', 'users': users, 'projects': projects,
                 'db': 'PostgreSQL' if DATABASE_URL else 'SQLite',
                 'total_employees': total_emp, 'dem_employees': dem,
+                'attendance': att, 'observations': obs, 'twl_readings': twl,
                 'sample': sample_data
             })
         finally:
