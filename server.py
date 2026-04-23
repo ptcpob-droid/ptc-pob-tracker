@@ -562,8 +562,9 @@ def init_db():
 
 
 def _anonymize_workers(conn):
-    """Replace all employee personal data with dummy data. Runs once, skips if already done."""
+    """Replace ALL employee personal data with dummy data. Runs once, skips if already done."""
     import random as _rnd
+    from datetime import datetime as _dt, timedelta as _td
     _rnd.seed(42)
 
     marker = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE employee_no LIKE 'DEM-%'")
@@ -571,16 +572,17 @@ def _anonymize_workers(conn):
     if already > 10:
         return
 
-    total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees WHERE active = 1")
+    total_row = db_fetchone(conn, "SELECT COUNT(*) as c FROM employees")
     total = total_row['c'] if isinstance(total_row, dict) else total_row[0]
     if total == 0:
         return
 
-    print(f'  Anonymizing {total} employees...')
+    print(f'  Anonymizing {total} employees (all rows)...')
 
     FIRST = {
         'Indian': ['Rajesh','Suresh','Anil','Vikram','Sanjay','Mahesh','Deepak','Ravi','Amit','Ajay',
-                    'Pradeep','Manoj','Ramesh','Venkat','Ganesh','Ashok','Sunil','Naresh','Kamal','Mukesh'],
+                    'Pradeep','Manoj','Ramesh','Venkat','Ganesh','Ashok','Sunil','Naresh','Kamal','Mukesh',
+                    'Dinesh','Kishore','Mohan','Gopal','Harish','Satish','Vinod','Jitendra','Bhaskar','Naveen'],
         'Pakistani': ['Ali','Hassan','Usman','Bilal','Imran','Tariq','Faisal','Nadeem','Shahid','Kamran',
                       'Waseem','Rizwan','Zafar','Irfan','Asif','Saleem','Arif','Khalid','Javed','Nasir'],
         'Filipino': ['Jose','Juan','Mark','Joel','Ryan','Carlo','Angelo','Rodel','Noel','Dennis',
@@ -613,49 +615,69 @@ def _anonymize_workers(conn):
               'Instrument Technician','Supervisor','QC Inspector','Store Keeper','Driver','Helper','Fitter','Fabricator']
     DISCS = ['Civil','Mechanical','Electrical','Piping','Instrumentation','HSE','Structural','Welding',
              'Painting','Insulation','Scaffolding','QA/QC','Rigging','Operations','Logistics']
+    QUALS = ['ITI','Diploma','B.Tech','High School','Trade Certificate','NCVT','BSc','Intermediate',
+             '10th Pass','Graduate','Certification','NVQ Level 3','Technical Diploma','CSWIP']
     CAMPS = ['ICAD Worker Village','Musaffah Camp','Ruwais Housing Complex','Bu Hasa Camp','Habshan Camp',
-             'Asab Camp','Shah Gas Camp','Jebel Dhanna Camp','Bab Field Camp','NEB Worker Camp']
-    MED_RESULTS = ['Fit','Fit','Fit','Fit','Fit','Fit','UNFIT','Pending','']
-    CHRONIC = ['','','','','','','Diabetes','Hypertension','Cholesterol','Asthma','Back Pain (Chronic)','Nil','None']
+             'Asab Camp','Shah Gas Camp','Jebel Dhanna Camp','Bab Field Camp','NEB Worker Camp',
+             'Gayathi Camp','Tarif Camp','Madinat Zayed Camp']
+    MED_RESULTS = ['Fit','Fit','Fit','Fit','Fit','Fit','Fit','UNFIT','Pending','']
+    MED_FREQ = ['1 Year','2 Years','1 Year','1 Year','6 Months','']
+    CHRONIC = ['','','','','','','','Diabetes','Hypertension','Cholesterol','Asthma','Back Pain (Chronic)','Nil','None']
     CHRONIC_TR = ['','','Yes','Yes - Under Control','No','N/A']
-    FEELINGS = ['Good','Good','Good','Fine','Fine','Excellent','','Tired','OK']
+    FEELINGS = ['Good','Good','Good','Good','Fine','Fine','Excellent','','Tired','OK']
+    FIELDGLASS = ['Active','Active','Active','Pending','Inactive','']
+    ASSETS = ['Asset-A','Asset-B','Asset-C','Asset-D','']
+    REMARKS = ['','','','','','New joiner','Transferred from other site','Experienced worker','']
 
     def _rand_date(sy=1975, ey=2000):
-        from datetime import datetime as _dt, timedelta as _td
         s = _dt(sy,1,1); d = (_dt(ey,12,31)-s).days
         return (s + _td(days=_rnd.randint(0,d))).strftime('%Y-%m-%d')
+    def _calc_age(dob_str):
+        try:
+            dob = _dt.strptime(dob_str, '%Y-%m-%d')
+            today = _dt.now()
+            return str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+        except Exception:
+            return ''
     def _rand_recent(m=24):
-        from datetime import datetime as _dt, timedelta as _td
         return (_dt.now() - _td(days=_rnd.randint(0,m*30))).strftime('%Y-%m-%d')
     def _rand_future(m=18):
-        from datetime import datetime as _dt, timedelta as _td
         return (_dt.now() + _td(days=_rnd.randint(-60,m*30))).strftime('%Y-%m-%d')
 
-    rows = db_fetchall(conn, 'SELECT id FROM employees WHERE active = 1')
+    rows = db_fetchall(conn, 'SELECT id FROM employees')
     used = set()
     for row in rows:
         eid = row['id'] if isinstance(row, dict) else row[0]
         nat = _rnd.choices(NATS, weights=NAT_W, k=1)[0]
         name = f"{_rnd.choice(FIRST[nat])} {_rnd.choice(LAST[nat])}"
-        emp_no = f"DEM-{_rnd.randint(1000,9999)}"
+        emp_no = f"DEM-{_rnd.randint(10000,99999)}"
         while emp_no in used:
-            emp_no = f"DEM-{_rnd.randint(1000,9999)}"
+            emp_no = f"DEM-{_rnd.randint(10000,99999)}"
         used.add(emp_no)
-        dob = _rand_date()
+        dob = _rand_date(1975, 2000)
+        age = _calc_age(dob)
         chronic = _rnd.choice(CHRONIC)
         ct = _rnd.choice(CHRONIC_TR) if chronic and chronic not in ('','Nil','None') else ''
+        agreement = f"AGR-{_rnd.randint(10000,99999)}"
+        srl = str(_rnd.randint(1, 9999))
 
         db_execute(conn, '''UPDATE employees SET
-            name=?, nationality=?, dob=?, designation=?, discipline=?,
-            camp_name=?, employee_no=?, date_joining=?, date_deployment=?,
-            medical_date=?, last_medical_date=?, next_medical_due=?, medical_result=?,
-            chronic_condition=?, chronic_treated=?, general_feeling=?, eid_passport=?
+            name=?, nationality=?, dob=?, age=?, designation=?, discipline=?,
+            qualification=?, camp_name=?, employee_no=?, srl=?, agreement_no=?,
+            date_joining=?, date_deployment=?, medical_date=?,
+            last_medical_date=?, next_medical_due=?, medical_result=?,
+            medical_frequency=?, chronic_condition=?, chronic_treated=?,
+            general_feeling=?, eid_passport=?, fieldglass_status=?,
+            asset_name=?, remarks=?
             WHERE id=?''',
-            (name, nat, dob, _rnd.choice(DESIGS), _rnd.choice(DISCS),
-             _rnd.choice(CAMPS), emp_no, _rand_recent(36), _rand_recent(24),
-             _rand_recent(12), _rand_recent(8), _rand_future(12), _rnd.choice(MED_RESULTS),
-             chronic, ct, _rnd.choice(FEELINGS),
+            (name, nat, dob, age, _rnd.choice(DESIGS), _rnd.choice(DISCS),
+             _rnd.choice(QUALS), _rnd.choice(CAMPS), emp_no, srl, agreement,
+             _rand_recent(36), _rand_recent(24), _rand_recent(12),
+             _rand_recent(8), _rand_future(12), _rnd.choice(MED_RESULTS),
+             _rnd.choice(MED_FREQ), chronic, ct,
+             _rnd.choice(FEELINGS),
              f"784-{_rnd.randint(1950,2005)}-{_rnd.randint(1000000,9999999)}-{_rnd.randint(1,9)}",
+             _rnd.choice(FIELDGLASS), _rnd.choice(ASSETS), _rnd.choice(REMARKS),
              eid))
 
     # Update attendance records to match new employee_nos
@@ -668,7 +690,7 @@ def _anonymize_workers(conn):
             db_execute(conn, 'UPDATE attendance SET employee_no = ? WHERE employee_id = ?', (new_no, aid))
 
     conn.commit()
-    print(f'  Anonymized {len(rows)} employees with dummy data')
+    print(f'  Anonymized {len(rows)} employees (all fields) with dummy data')
 
 
 # Run init_db at import time so gunicorn/production picks it up
