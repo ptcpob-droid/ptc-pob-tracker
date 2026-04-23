@@ -3255,22 +3255,30 @@ async function loadOIData() {
     else if (area) qp += `&area_id=${area}`;
     else if (division) qp += `&division_id=${division}`;
 
-    const [summary, readings] = await Promise.all([
+    const [summary, readings, insights] = await Promise.all([
         api('/observations/summary?' + qp),
-        api('/observations?' + qp)
+        api('/observations?' + qp),
+        api('/observations/insights?' + qp)
     ]);
 
     renderOISummary(summary);
-    renderOICharts(summary);
+    requestAnimationFrame(() => {
+        renderOICharts(summary);
+        renderOIRecurringChart(insights);
+        renderOIDisciplineChart(insights);
+        renderOITrendChart(summary);
+    });
+    renderOIInsights(insights);
     renderOIReadings(readings);
 }
 
 function renderOISummary(data) {
     const el = $('#oi-summary-cards');
     if (!el || !data) return;
+    const safeRate = data.total > 0 ? Math.round((data.safe / data.total) * 100) : 0;
     el.innerHTML = `
         <div class="stat-card"><div class="stat-value blue">${data.total}</div><div class="stat-label">Total Observations</div></div>
-        <div class="stat-card"><div class="stat-value green">${data.safe}</div><div class="stat-label">Safe</div></div>
+        <div class="stat-card"><div class="stat-value green">${data.safe} <small style="font-size:0.6em;opacity:0.7">(${safeRate}%)</small></div><div class="stat-label">Safe</div></div>
         <div class="stat-card"><div class="stat-value orange">${data.unsafe}</div><div class="stat-label">Unsafe / Near Miss / HIPO</div></div>
         <div class="stat-card"><div class="stat-value">${data.by_type?.length || 0}</div><div class="stat-label">Observation Types</div></div>`;
 }
@@ -3284,25 +3292,88 @@ function renderOICharts(data) {
     };
 
     const groupCanvas = $('#oi-group-chart');
-    if (groupCanvas && data.by_group) {
+    if (groupCanvas && groupCanvas.clientWidth > 0 && data.by_group?.length) {
         drawDonutChart(groupCanvas, data.by_group.map(g => ({
             label: g.observation_group, value: g.c, color: groupColors[g.observation_group] || '#94a3b8'
         })), data.total);
     }
 
     const typeCanvas = $('#oi-type-chart');
-    if (typeCanvas && data.by_type) {
+    if (typeCanvas && typeCanvas.clientWidth > 0 && data.by_type?.length) {
         const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316', '#14b8a6', '#64748b'];
         drawHorizontalBarChart(typeCanvas, data.by_type.map(t => t.observation_type), data.by_type.map(t => t.c), colors, data.total);
     }
 
     const sevCanvas = $('#oi-severity-chart');
-    if (sevCanvas && data.by_severity) {
+    if (sevCanvas && sevCanvas.clientWidth > 0 && data.by_severity?.length) {
         const sevColors = { 'N/A': '#94a3b8', 'Low': '#22c55e', 'Medium': '#f59e0b', 'High': '#ef4444', 'Critical': '#a855f7' };
         drawDonutChart(sevCanvas, data.by_severity.map(s => ({
             label: s.potential_severity || 'N/A', value: s.c, color: sevColors[s.potential_severity] || '#94a3b8'
         })), data.total);
     }
+}
+
+function renderOIRecurringChart(data) {
+    const canvas = $('#oi-recurring-chart');
+    if (!canvas || !data?.recurring?.length || canvas.clientWidth <= 0) return;
+    const colors = ['#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#06b6d4', '#ec4899', '#22c55e', '#f97316', '#14b8a6', '#64748b'];
+    const labels = data.recurring.map(r => r.observation_type);
+    const values = data.recurring.map(r => r.c);
+    const total = values.reduce((a, b) => a + b, 0);
+    drawHorizontalBarChart(canvas, labels, values, colors, total);
+}
+
+function renderOIDisciplineChart(data) {
+    const canvas = $('#oi-discipline-chart');
+    if (!canvas || !data?.by_discipline?.length || canvas.clientWidth <= 0) return;
+    const discColors = {
+        'Civil': '#ef4444', 'Mechanical': '#3b82f6', 'Electrical': '#f59e0b',
+        'Piping': '#22c55e', 'Instrumentation': '#8b5cf6', 'HSE': '#06b6d4',
+        'Structural': '#ec4899', 'Welding': '#f97316', 'Painting': '#14b8a6',
+        'Insulation': '#64748b', 'Scaffolding': '#a855f7', 'QA/QC': '#10b981',
+        'Rigging': '#d946ef', 'Operations': '#0ea5e9', 'Logistics': '#84cc16'
+    };
+    const segments = data.by_discipline.filter(d => d.observer_discipline).map(d => ({
+        label: d.observer_discipline,
+        value: d.c,
+        color: discColors[d.observer_discipline] || '#94a3b8'
+    }));
+    const total = segments.reduce((a, s) => a + s.value, 0);
+    if (segments.length) drawDonutChart(canvas, segments, total);
+}
+
+function renderOITrendChart(data) {
+    const canvas = $('#oi-trend-chart');
+    if (!canvas || !data?.by_date?.length || canvas.clientWidth <= 0) return;
+    const labels = data.by_date.map(d => d.observation_date);
+    const values = data.by_date.map(d => d.c);
+    drawLineChart(canvas, labels, values, Math.max(...values) + 2);
+}
+
+function renderOIInsights(data) {
+    const el = $('#oi-insights-list');
+    const countBadge = $('#oi-insight-count');
+    if (!el) return;
+    if (!data?.insights?.length) {
+        el.innerHTML = '<div class="empty-state">No anomalies detected in this period</div>';
+        if (countBadge) countBadge.textContent = '0';
+        return;
+    }
+    if (countBadge) countBadge.textContent = data.count;
+
+    const sevColors = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#16a34a' };
+    const catIcons = { Trend: '📈', Discipline: '👷', HIPO: '⚠️', Recurring: '🔄', Area: '📍', Ratio: '⚖️' };
+
+    el.innerHTML = `<table class="worker-table"><thead><tr>
+        <th style="width:30px"></th><th>Insight</th><th>Category</th><th>Severity</th><th style="text-align:right">Metric</th>
+        </tr></thead><tbody>` +
+        data.insights.map(i => `<tr style="border-left:3px solid ${sevColors[i.severity] || '#94a3b8'}">
+            <td style="font-size:1.1em;text-align:center">${catIcons[i.category] || '📊'}</td>
+            <td><strong>${esc(i.title)}</strong><br><small style="color:var(--text-dim)">${esc(i.detail)}</small></td>
+            <td><span class="oi-badge oi-badge-${i.category === 'HIPO' ? 'hipo' : i.severity === 'high' ? 'unsafe' : 'safe'}">${esc(i.category)}</span></td>
+            <td><span style="color:${sevColors[i.severity]};font-weight:600;text-transform:uppercase;font-size:0.8em">${esc(i.severity)}</span></td>
+            <td style="text-align:right;font-weight:700;font-size:1.1em;color:${sevColors[i.severity]}">${esc(i.metric)}</td>
+        </tr>`).join('') + '</tbody></table>';
 }
 
 function renderOIReadings(readings) {
@@ -3318,7 +3389,7 @@ function renderOIReadings(readings) {
     };
     el.innerHTML = `<table class="worker-table"><thead><tr>
         <th>Date</th><th>Group</th><th>Type</th><th>Severity</th><th>Risk</th>
-        <th>Observer</th><th>Division</th><th>Outcome</th>
+        <th>Observer</th><th>Discipline</th><th>Division</th><th>Outcome</th>
         </tr></thead><tbody>` +
         readings.slice(0, 200).map(r => `<tr>
             <td>${formatHeadcountDate(r.observation_date)}</td>
@@ -3327,6 +3398,7 @@ function renderOIReadings(readings) {
             <td>${esc(r.potential_severity || '—')}</td>
             <td>${esc(r.risk_rating || '—')}</td>
             <td>${esc(r.observer_name || '—')}</td>
+            <td>${esc(r.observer_discipline || '—')}</td>
             <td>${esc(r.division_name || '—')}</td>
             <td>${esc(r.outcome || '—')}</td>
         </tr>`).join('') + '</tbody></table>';

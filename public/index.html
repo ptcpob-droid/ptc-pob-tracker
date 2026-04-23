@@ -649,7 +649,7 @@
 
             <div class="section">
                 <h3 style="margin-bottom:12px">TWL Trend</h3>
-                <canvas id="twl-trend-chart" height="260" style="width:100%;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
+                <canvas id="twl-trend-chart" height="180" style="width:100%;max-height:220px;background:var(--bg-card);border-radius:var(--radius);padding:12px"></canvas>
             </div>
 
             <!-- TWL Readings Log -->
@@ -724,7 +724,7 @@
             <!-- O&I Summary -->
             <div id="oi-summary-cards" class="stats-grid" style="margin-top:12px"></div>
 
-            <!-- O&I Charts -->
+            <!-- O&I Charts Row 1 -->
             <div class="dash-charts-grid" style="margin-top:16px">
                 <div class="dash-chart-card">
                     <div class="dash-chart-header"><h4>By Observation Group</h4></div>
@@ -738,6 +738,31 @@
                     <div class="dash-chart-header"><h4>By Severity</h4></div>
                     <canvas id="oi-severity-chart" height="200" style="width:100%"></canvas>
                 </div>
+            </div>
+
+            <!-- O&I Charts Row 2 -->
+            <div class="dash-charts-grid" style="margin-top:16px">
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>Recurring Observation Types</h4></div>
+                    <canvas id="oi-recurring-chart" height="200" style="width:100%"></canvas>
+                </div>
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>Observations by Discipline</h4></div>
+                    <canvas id="oi-discipline-chart" height="200" style="width:100%"></canvas>
+                </div>
+                <div class="dash-chart-card">
+                    <div class="dash-chart-header"><h4>Daily Trend</h4></div>
+                    <canvas id="oi-trend-chart" height="200" style="width:100%"></canvas>
+                </div>
+            </div>
+
+            <!-- O&I Insights / Anomalies -->
+            <div class="section" style="margin-top:16px">
+                <div class="section-header" style="margin-bottom:12px">
+                    <h3>Safety Insights &amp; Anomalies</h3>
+                    <span id="oi-insight-count" class="badge" style="background:var(--primary);color:#fff;padding:2px 10px;border-radius:12px;font-size:0.8rem"></span>
+                </div>
+                <div id="oi-insights-list"></div>
             </div>
 
             <!-- O&I Readings Log -->

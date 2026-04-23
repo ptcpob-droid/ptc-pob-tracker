@@ -887,8 +887,10 @@ def _seed_demo_observations(conn):
         'Health, Hygiene, Food or Water', 'Safety Signage and Demarcation',
         'Emergency Response', 'Housekeeping', 'Driving/Vehicles',
         'Excavation', 'Line of Fire or Pinch Points', 'Working at Height',
-        'Scaffolding', 'Confined Space', 'Electrical',
-        'Environmental', 'Material Handling', 'General Observation'
+        'Workplace Environment', 'Work Planning & Authorisation', 'Supervision',
+        'Situational Awareness', 'Toxic/Flammable Gas', 'Confined Space',
+        'Isolation/Lockout', 'Improvement Opportunity', 'Manual/Mechanical Handling',
+        'Security', 'Other',
     ]
     severity_unsafe = ['Low', 'Medium', 'High', 'Critical']
     severity_w = [40, 35, 20, 5]
@@ -3271,8 +3273,8 @@ def api_observations_summary():
         base = f'FROM observations o {where}'
         total = db_fetchone(conn, f'SELECT COUNT(*) as c {base}', params)['c']
         by_group = db_fetchall(conn, f'SELECT observation_group, COUNT(*) as c {base} GROUP BY observation_group ORDER BY c DESC', params)
-        by_type = db_fetchall(conn, f'SELECT observation_type, COUNT(*) as c {base} AND observation_type IS NOT NULL AND observation_type != "" GROUP BY observation_type ORDER BY c DESC LIMIT 10', params)
-        by_severity = db_fetchall(conn, f'SELECT potential_severity, COUNT(*) as c {base} AND potential_severity IS NOT NULL AND potential_severity != "" GROUP BY potential_severity ORDER BY c DESC', params)
+        by_type = db_fetchall(conn, f"SELECT observation_type, COUNT(*) as c {base} AND observation_type IS NOT NULL AND observation_type != '' GROUP BY observation_type ORDER BY c DESC LIMIT 10", params)
+        by_severity = db_fetchall(conn, f"SELECT potential_severity, COUNT(*) as c {base} AND potential_severity IS NOT NULL AND potential_severity != '' GROUP BY potential_severity ORDER BY c DESC", params)
         by_date = db_fetchall(conn, f'SELECT observation_date, COUNT(*) as c {base} GROUP BY observation_date ORDER BY observation_date', params)
         safe_count = db_fetchone(conn, f"SELECT COUNT(*) as c {base} AND observation_group IN ('Safe Act','Safe Condition')", params)['c']
         unsafe_count = total - safe_count
@@ -3286,6 +3288,189 @@ def api_observations_summary():
         'by_type': [dict(r) for r in by_type],
         'by_severity': [dict(r) for r in by_severity],
         'by_date': [dict(r) for r in by_date],
+    })
+
+
+@app.route('/api/observations/insights')
+@require_auth
+def api_observations_insights():
+    """Detect O&I anomalies: rising trends, discipline hotspots, recurring types, HIPO clusters."""
+    days = request.args.get('days', 60, type=int)
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+
+    conn = get_db()
+    try:
+        where = 'WHERE 1=1'
+        params = []
+        start = (date.today() - timedelta(days=days)).isoformat()
+        where += ' AND o.observation_date >= ?'
+        params.append(start)
+        if division_id:
+            where += ' AND o.division_id = ?'
+            params.append(division_id)
+        if area_id:
+            where += ' AND o.area_id = ?'
+            params.append(area_id)
+        if project_id:
+            where += ' AND o.project_id = ?'
+            params.append(project_id)
+
+        base = f'FROM observations o {where}'
+        insights = []
+
+        # 1. Recurring observation types (top repeated)
+        recurring = db_fetchall(conn, f"""
+            SELECT observation_type, COUNT(*) as c,
+                   observation_group
+            {base} AND observation_type IS NOT NULL AND observation_type != ''
+            GROUP BY observation_type
+            HAVING COUNT(*) >= 3
+            ORDER BY c DESC LIMIT 10
+        """, params)
+
+        # 2. Weekly trend comparison for unsafe observations
+        mid = (date.today() - timedelta(days=days//2)).isoformat()
+        first_half = db_fetchone(conn, f"""
+            SELECT COUNT(*) as c {base}
+            AND observation_group NOT IN ('Safe Act','Safe Condition')
+            AND o.observation_date < ?
+        """, params + [mid])['c']
+        second_half = db_fetchone(conn, f"""
+            SELECT COUNT(*) as c {base}
+            AND observation_group NOT IN ('Safe Act','Safe Condition')
+            AND o.observation_date >= ?
+        """, params + [mid])['c']
+
+        if first_half > 0 and second_half > first_half * 1.2:
+            pct_rise = round(((second_half - first_half) / first_half) * 100)
+            insights.append({
+                'severity': 'high',
+                'category': 'Trend',
+                'title': f'Unsafe observations rising ({pct_rise}% increase)',
+                'detail': f'Recent {days//2} days: {second_half} unsafe vs prior {days//2} days: {first_half}',
+                'metric': f'+{pct_rise}%'
+            })
+
+        # 3. Discipline hotspots
+        by_disc = db_fetchall(conn, f"""
+            SELECT observer_discipline, COUNT(*) as c,
+                   SUM(CASE WHEN observation_group NOT IN ('Safe Act','Safe Condition') THEN 1 ELSE 0 END) as unsafe_c
+            {base} AND observer_discipline IS NOT NULL AND observer_discipline != ''
+            GROUP BY observer_discipline
+            ORDER BY unsafe_c DESC
+        """, params)
+
+        total_obs = db_fetchone(conn, f'SELECT COUNT(*) as c {base}', params)['c'] or 1
+        for disc in by_disc[:5]:
+            d_name = disc['observer_discipline']
+            d_total = disc['c']
+            d_unsafe = disc['unsafe_c']
+            share = round((d_total / total_obs) * 100)
+            unsafe_rate = round((d_unsafe / d_total) * 100) if d_total > 0 else 0
+            if d_unsafe >= 3 and unsafe_rate > 30:
+                insights.append({
+                    'severity': 'high' if unsafe_rate > 50 else 'medium',
+                    'category': 'Discipline',
+                    'title': f'{d_name}: {unsafe_rate}% unsafe rate',
+                    'detail': f'{d_unsafe}/{d_total} observations are unsafe/near-miss/HIPO ({share}% of all observations)',
+                    'metric': f'{unsafe_rate}%'
+                })
+
+        # 4. HIPO events
+        hipos = db_fetchall(conn, f"""
+            SELECT o.observation_date, o.observation_type, o.observer_discipline,
+                   d.name as division_name
+            {base}
+            LEFT JOIN divisions d ON d.id = o.division_id
+            AND o.observation_group = 'HIPO'
+            ORDER BY o.observation_date DESC
+        """, params)
+        if hipos:
+            insights.append({
+                'severity': 'critical',
+                'category': 'HIPO',
+                'title': f'{len(hipos)} High Potential (HIPO) events detected',
+                'detail': f'Most recent: {hipos[0].get("observation_type","N/A")} on {hipos[0].get("observation_date","")}',
+                'metric': str(len(hipos))
+            })
+
+        # 5. Type-specific rising trends
+        for rec in recurring[:5]:
+            obs_type = rec['observation_type']
+            tc = rec['c']
+            first_t = db_fetchone(conn, f"""
+                SELECT COUNT(*) as c {base}
+                AND observation_type = ? AND o.observation_date < ?
+            """, params + [obs_type, mid])['c']
+            second_t = db_fetchone(conn, f"""
+                SELECT COUNT(*) as c {base}
+                AND observation_type = ? AND o.observation_date >= ?
+            """, params + [obs_type, mid])['c']
+            if first_t > 0 and second_t > first_t * 1.3:
+                pct = round(((second_t - first_t) / first_t) * 100)
+                insights.append({
+                    'severity': 'medium',
+                    'category': 'Recurring',
+                    'title': f'"{obs_type}" observations increasing (+{pct}%)',
+                    'detail': f'Total: {tc} over {days} days. Recent half: {second_t} vs prior: {first_t}',
+                    'metric': str(tc)
+                })
+
+        # 6. Area concentration
+        by_area = db_fetchall(conn, f"""
+            SELECT a.name as area_name, COUNT(*) as c,
+                   SUM(CASE WHEN o.observation_group NOT IN ('Safe Act','Safe Condition') THEN 1 ELSE 0 END) as unsafe_c
+            {base}
+            LEFT JOIN areas a ON a.id = o.area_id
+            AND a.name IS NOT NULL
+            GROUP BY a.name
+            ORDER BY unsafe_c DESC
+        """, params)
+        for a in by_area[:3]:
+            a_name = a.get('area_name', 'Unknown')
+            if not a_name:
+                continue
+            a_unsafe = a['unsafe_c']
+            a_total = a['c']
+            if a_unsafe >= 5:
+                insights.append({
+                    'severity': 'medium',
+                    'category': 'Area',
+                    'title': f'{a_name}: {a_unsafe} unsafe observations',
+                    'detail': f'{a_total} total observations in this area, {a_unsafe} are unsafe/near-miss/HIPO',
+                    'metric': str(a_unsafe)
+                })
+
+        # 7. Safe observation ratio
+        safe_total = db_fetchone(conn, f"""
+            SELECT COUNT(*) as c {base}
+            AND observation_group IN ('Safe Act','Safe Condition')
+        """, params)['c']
+        if total_obs > 10:
+            safe_pct = round((safe_total / total_obs) * 100)
+            if safe_pct < 50:
+                insights.append({
+                    'severity': 'medium',
+                    'category': 'Ratio',
+                    'title': f'Low safe observation ratio: {safe_pct}%',
+                    'detail': f'Only {safe_total} of {total_obs} observations are safe acts/conditions. Target: >60%',
+                    'metric': f'{safe_pct}%'
+                })
+
+        # Sort by severity
+        sev_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        insights.sort(key=lambda a: sev_order.get(a['severity'], 9))
+
+    finally:
+        conn.close()
+
+    return jsonify({
+        'count': len(insights),
+        'insights': insights,
+        'recurring': [dict(r) for r in recurring] if recurring else [],
+        'by_discipline': [dict(r) for r in by_disc] if by_disc else [],
     })
 
 
