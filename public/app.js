@@ -1426,7 +1426,7 @@ async function loadDashHealthChart() {
     if (!canvas) return;
     const filterParams = getDashFilterParams();
     const data = await api('/health-trends' + (filterParams ? '?' + filterParams : ''));
-    if (!data || !data.total) return;
+    if (!data || data.success === false || !data.medical || !data.total) return;
     drawDonutChart(canvas, [
         { label: 'Fit', value: data.medical.fit, color: '#22c55e' },
         { label: 'Unfit', value: data.medical.unfit, color: '#ef4444' },
@@ -1798,8 +1798,8 @@ const AREA_COORDS = {
 };
 
 async function initTrends() {
-    if (_trendsInited) return;
-    _trendsInited = true;
+    if (!_trendsInited) {
+        _trendsInited = true;
 
     const td = $('#trend-division'), ta = $('#trend-area'), tp = $('#trend-project'), tc = $('#trend-contractor');
     const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
@@ -1836,6 +1836,7 @@ async function initTrends() {
 
     const changeEls = ['trend-designation', 'trend-nationality'];
     changeEls.forEach(id => $('#' + id)?.addEventListener('change', loadTrends));
+    }
     await loadTrends();
 }
 
@@ -2127,8 +2128,8 @@ function drawLineChart(canvas, labels, values, total) {
 let _healthInited = false;
 
 async function initHealthTrends() {
-    if (_healthInited) return;
-    _healthInited = true;
+    if (!_healthInited) {
+        _healthInited = true;
 
     const hd = $('#ht-division'), ha = $('#ht-area'), hp = $('#ht-project'), hc = $('#ht-contractor');
     const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
@@ -2163,6 +2164,7 @@ async function initHealthTrends() {
 
     _tabSliders.health = initTabSlider($('#ht-date-slider'), loadHealthTrends);
 
+    }
     await loadHealthTrends();
 }
 
@@ -2232,7 +2234,10 @@ function riskLevel(person) {
 async function loadHealthTrends() {
     const p = getHTFilterParams();
     const data = await api('/health-trends' + (p ? '?' + p : ''));
-    if (!data) return;
+    if (!data || data.success === false || !data.medical) {
+        if (data && data.message) toast(data.message, 'error');
+        return;
+    }
     renderHealthOverview(data);
     renderMedicalSection(data);
     renderChronicSection(data);
@@ -2285,13 +2290,21 @@ function renderMedicalSection(data) {
         ).join('');
     }
 
-    if (canvas) drawMedicalChart(canvas, data);
+    if (canvas) {
+        const tryDraw = (attempt = 0) => {
+            if (canvas.clientWidth > 0 || attempt >= 12) drawMedicalChart(canvas, data);
+            else requestAnimationFrame(() => tryDraw(attempt + 1));
+        };
+        requestAnimationFrame(() => tryDraw(0));
+    }
 }
 
 function drawMedicalChart(canvas, data) {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
+    let w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w <= 0) w = canvas.parentElement?.clientWidth || 480;
+    if (h <= 0) h = parseInt(canvas.getAttribute('height'), 10) || 260;
     canvas.width = w * dpr; canvas.height = h * dpr;
     ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
 
