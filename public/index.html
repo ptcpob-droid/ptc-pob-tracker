@@ -265,6 +265,37 @@
                 <div id="anomalies-list" class="anomalies-list"></div>
             </div>
 
+            <!-- Predictive / Preventive Risk Engine -->
+            <div id="risk-engine-panel" class="risk-engine-panel">
+                <div class="risk-engine-header">
+                    <h3>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                        Predictive Risk Engine
+                    </h3>
+                    <span id="risk-engine-level" class="risk-level-badge"></span>
+                </div>
+                <p class="risk-engine-disclaimer">Leading indicators and trends from attendance, health, O&amp;I, and TWL — for early warning and preventive action. Not a substitute for formal risk assessment.</p>
+                <div class="risk-engine-body">
+                    <div class="risk-gauge-wrap">
+                        <div class="risk-gauge-ring" id="risk-gauge-ring" style="--risk-pct:0">
+                            <div class="risk-gauge-inner">
+                                <span id="risk-index-value" class="risk-index-num">—</span>
+                                <span class="risk-index-label">risk index</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="risk-domains" id="risk-domains"></div>
+                </div>
+                <div class="risk-engine-section">
+                    <h4 class="risk-subhead">Predictive signals</h4>
+                    <div id="risk-predictive-list" class="risk-signal-list"></div>
+                </div>
+                <div class="risk-engine-section">
+                    <h4 class="risk-subhead">Preventive actions (prioritized)</h4>
+                    <ol id="risk-preventive-list" class="risk-preventive-list"></ol>
+                </div>
+            </div>
+
             <!-- Charts Grid -->
             <div class="dash-charts-grid">
                 <!-- Attendance Mini Chart -->

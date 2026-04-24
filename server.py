@@ -2999,7 +2999,17 @@ def api_anomalies():
         obs_params_day = [target_date]
         obs_where_7d = "WHERE o.observation_date >= ? AND o.observation_date <= ?"
         obs_params_7d = [d7_start, target_date]
-        if division_id:
+        if project_id:
+            obs_where += ' AND o.project_id = ?'
+            obs_where_7d += ' AND o.project_id = ?'
+            obs_params_day.append(project_id)
+            obs_params_7d.append(project_id)
+        elif area_id:
+            obs_where += ' AND o.area_id = ?'
+            obs_where_7d += ' AND o.area_id = ?'
+            obs_params_day.append(area_id)
+            obs_params_7d.append(area_id)
+        elif division_id:
             obs_where += ' AND o.division_id = ?'
             obs_where_7d += ' AND o.division_id = ?'
             obs_params_day.append(division_id)
@@ -3126,6 +3136,321 @@ def api_anomalies():
         'date': target_date,
         'count': len(anomalies),
         'anomalies': anomalies,
+    })
+
+
+def _linear_slope_y(values):
+    """Least-squares slope for y vs x=0..n-1. Returns 0 if degenerate."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(values) / n
+    var_x = sum((x - mx) ** 2 for x in xs)
+    if var_x < 1e-9:
+        return 0.0
+    cov = sum((xs[i] - mx) * (values[i] - my) for i in range(n))
+    return cov / var_x
+
+
+def _risk_level_from_index(score):
+    if score >= 75:
+        return 'critical'
+    if score >= 50:
+        return 'high'
+    if score >= 25:
+        return 'medium'
+    return 'low'
+
+
+@app.route('/api/risk-engine')
+@require_auth
+def api_risk_engine():
+    """
+    Predictive / preventive risk engine: trend analysis, composite risk index,
+    leading indicators, and prioritized preventive actions (runs on live + demo data).
+    """
+    target_date = request.args.get('date', date.today().isoformat())
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+
+    td = date.fromisoformat(target_date)
+    d14 = (td - timedelta(days=13)).isoformat()
+    d7 = (td - timedelta(days=6)).isoformat()
+    d_prev7_start = (td - timedelta(days=13)).isoformat()
+    d_prev7_end = (td - timedelta(days=7)).isoformat()
+
+    conn = get_db()
+    predictive_signals = []
+    preventive_recommendations = []
+    domains = {}
+
+    try:
+        emp_where = 'WHERE e.active = 1'
+        emp_params = []
+        if project_id:
+            emp_where += ' AND e.project_id = ?'
+            emp_params.append(project_id)
+        elif area_id:
+            emp_where += ' AND p.area_id = ?'
+            emp_params.append(area_id)
+        elif division_id:
+            emp_where += ' AND ar.division_id = ?'
+            emp_params.append(division_id)
+
+        emp_base = f'''FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            {emp_where}'''
+        total_emp = db_fetchone(conn, f'SELECT COUNT(*) as c {emp_base}', emp_params)['c'] or 1
+
+        # --- Attendance: daily AM presence rate (14d) ---
+        att_join = '''FROM attendance att
+            JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+            LEFT JOIN projects p ON p.id = att.project_id
+            LEFT JOIN areas ar ON ar.id = p.area_id
+            WHERE att.scan_date >= ? AND att.scan_date <= ? AND att.session = ? AND e.active = 1'''
+        att_p_base = [d14, target_date, 'AM']
+        if project_id:
+            att_join += ' AND att.project_id = ?'
+            att_p_base.append(project_id)
+        elif area_id:
+            att_join += ' AND p.area_id = ?'
+            att_p_base.append(area_id)
+        elif division_id:
+            att_join += ' AND ar.division_id = ?'
+            att_p_base.append(division_id)
+
+        daily_att = db_fetchall(conn, f'SELECT att.scan_date as d, COUNT(DISTINCT att.employee_no) as c {att_join} GROUP BY att.scan_date ORDER BY att.scan_date', att_p_base)
+        att_map = {row['d'] if isinstance(row, dict) else row[0]: (row['c'] if isinstance(row, dict) else row[1]) for row in daily_att}
+        rates = []
+        cur = date.fromisoformat(d14)
+        end_d = td
+        while cur <= end_d:
+            ds = cur.isoformat()
+            rates.append((att_map.get(ds, 0) / total_emp) * 100)
+            cur += timedelta(days=1)
+        att_slope = _linear_slope_y(rates) if rates else 0
+        last3 = sum(rates[-3:]) / 3 if len(rates) >= 3 else (rates[-1] if rates else 0)
+        first3 = sum(rates[:3]) / 3 if len(rates) >= 3 else (rates[0] if rates else 0)
+        att_decline_pp = first3 - last3
+
+        att_score = 0
+        if last3 < 60 and last3 > 0:
+            att_score += min(15, int((60 - last3) * 0.4))
+        if att_slope < -0.35:
+            att_score += min(12, int(abs(att_slope) * 8))
+        if att_decline_pp > 8:
+            att_score += min(10, int(att_decline_pp * 0.5))
+        att_score = min(25, att_score)
+
+        att_trend = 'worsening' if att_slope < -0.2 or att_decline_pp > 5 else ('improving' if att_slope > 0.2 else 'stable')
+        domains['attendance'] = {
+            'score': att_score,
+            'trend': att_trend,
+            'summary': f'Recent AM presence ~{last3:.0f}% of roster (14d trend slope {att_slope:+.2f} pp/day)',
+        }
+        if att_slope < -0.25 and len(rates) >= 7:
+            predictive_signals.append({
+                'type': 'predictive',
+                'severity': 'medium',
+                'title': 'Attendance momentum declining',
+                'detail': f'14-day trend suggests falling scan-in rates (~{att_decline_pp:.1f} pp drop vs period start). Early signal of engagement or logistics issues.',
+                'horizon_days': 14,
+                'confidence': min(0.9, 0.45 + min(0.4, abs(att_slope) * 0.15)),
+            })
+            preventive_recommendations.append({
+                'priority': 2,
+                'domain': 'attendance',
+                'action': 'Review scanner coverage, transport, and roster changes; communicate expectations for AM sign-in.',
+                'rationale': 'Leading indicator: attendance trajectory negative before thresholds breach.',
+            })
+
+        # --- Health pipeline ---
+        unfit = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND LOWER(e.medical_result) LIKE '%unfit%'", emp_params)['c']
+        overdue = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.next_medical_due IS NOT NULL AND e.next_medical_due != '' AND e.next_medical_due < ?", emp_params + [target_date])['c']
+        due_30 = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.next_medical_due IS NOT NULL AND e.next_medical_due != '' AND e.next_medical_due > ? AND e.next_medical_due <= ?", emp_params + [target_date, (td + timedelta(days=30)).isoformat()])['c']
+        chronic_ut = db_fetchone(conn, f"SELECT COUNT(*) as c {emp_base} AND e.chronic_condition IS NOT NULL AND e.chronic_condition != '' AND LOWER(e.chronic_condition) NOT IN ('nil','none','no','n/a') AND (e.chronic_treated IS NULL OR e.chronic_treated = '' OR LOWER(e.chronic_treated) NOT LIKE '%yes%')", emp_params)['c']
+
+        health_score = min(20, unfit * 4 + min(12, overdue // 3) + min(8, chronic_ut // 2) + min(6, due_30 // 25))
+        domains['health'] = {
+            'score': health_score,
+            'trend': 'stable',
+            'summary': f'{unfit} unfit, {overdue} overdue medicals, {due_30} due within 30 days, {chronic_ut} chronic not confirmed treated',
+        }
+        if due_30 > 50:
+            predictive_signals.append({
+                'type': 'preventive',
+                'severity': 'low',
+                'title': 'Medical renewal wave approaching',
+                'detail': f'{due_30} workers have medical due in the next 30 days — capacity planning now avoids compliance spikes.',
+                'horizon_days': 30,
+                'confidence': 0.85,
+            })
+            preventive_recommendations.append({
+                'priority': 3,
+                'domain': 'health',
+                'action': 'Schedule batch medical slots and notify contractors of renewal windows.',
+                'rationale': 'Preventive scheduling reduces overdue risk and last-minute unfit flags.',
+            })
+        if unfit > 0:
+            preventive_recommendations.append({
+                'priority': 1,
+                'domain': 'health',
+                'action': 'Immediate review of UNFIT workers: restrict site access until cleared.',
+                'rationale': 'Active unfit roster is a direct regulatory and duty-of-care exposure.',
+            })
+
+        # --- O&I: unsafe trend ---
+        obs_where = 'WHERE o.observation_date >= ? AND o.observation_date <= ?'
+        obs_p = [d14, target_date]
+        if project_id:
+            obs_where += ' AND o.project_id = ?'
+            obs_p.append(project_id)
+        elif area_id:
+            obs_where += ' AND o.area_id = ?'
+            obs_p.append(area_id)
+        elif division_id:
+            obs_where += ' AND o.division_id = ?'
+            obs_p.append(division_id)
+
+        daily_unsafe = db_fetchall(conn, f'''SELECT o.observation_date as d, COUNT(*) as c
+            FROM observations o {obs_where}
+            AND o.observation_group NOT IN ('Safe Act','Safe Condition')
+            GROUP BY o.observation_date ORDER BY o.observation_date''', obs_p)
+        umap = {row['d'] if isinstance(row, dict) else row[0]: (row['c'] if isinstance(row, dict) else row[1]) for row in daily_unsafe}
+        unsafe_series = []
+        cur = date.fromisoformat(d14)
+        while cur <= td:
+            unsafe_series.append(umap.get(cur.isoformat(), 0))
+            cur += timedelta(days=1)
+        unsafe_slope = _linear_slope_y(unsafe_series) if unsafe_series else 0
+        w2_unsafe = sum(unsafe_series[-7:]) if len(unsafe_series) >= 7 else sum(unsafe_series)
+        w1_unsafe = sum(unsafe_series[-14:-7]) if len(unsafe_series) >= 14 else w2_unsafe
+        unsafe_accel = (w2_unsafe - w1_unsafe) / max(1, w1_unsafe) if w1_unsafe else (1.0 if w2_unsafe > 3 else 0)
+
+        hipo_14 = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where} AND o.observation_group = 'HIPO'", obs_p)['c']
+        near_14 = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where} AND o.observation_group = 'Near Miss'", obs_p)['c']
+        total_obs_14 = db_fetchone(conn, f"SELECT COUNT(*) as c FROM observations o {obs_where}", obs_p)['c'] or 1
+        unsafe_share = sum(unsafe_series) / total_obs_14 * 100 if total_obs_14 else 0
+
+        safety_score = min(30, int(unsafe_share * 0.25) + min(15, int(max(0, unsafe_slope) * 3)) + min(10, hipo_14 * 3) + min(8, near_14 // 2))
+        if unsafe_accel > 0.35 and w2_unsafe >= 5:
+            safety_score = min(30, safety_score + 8)
+        domains['safety'] = {
+            'score': safety_score,
+            'trend': 'worsening' if unsafe_slope > 0.15 or unsafe_accel > 0.25 else ('improving' if unsafe_slope < -0.1 else 'stable'),
+            'summary': f'{sum(unsafe_series)} unsafe/near/HIPO in 14d; HIPO={hipo_14}, near-miss={near_14}; unsafe share {unsafe_share:.0f}%',
+        }
+        if unsafe_slope > 0.12 and sum(unsafe_series) >= 8:
+            days_to_double = None
+            if unsafe_slope > 0.01:
+                avg_tail = sum(unsafe_series[-5:]) / min(5, len(unsafe_series))
+                days_to_double = int(max(3, min(21, (avg_tail / max(0.01, unsafe_slope))))) if avg_tail else None
+            predictive_signals.append({
+                'type': 'predictive',
+                'severity': 'high' if unsafe_slope > 0.25 else 'medium',
+                'title': 'Unsafe observation rate trending up',
+                'detail': f'14-day slope indicates increasing unsafe/near-miss volume (week-over-week {(unsafe_accel*100):.0f}% change). Early intervention reduces incident probability.',
+                'horizon_days': days_to_double or 14,
+                'confidence': min(0.88, 0.5 + min(0.35, unsafe_slope * 0.8)),
+            })
+            preventive_recommendations.append({
+                'priority': 1,
+                'domain': 'safety',
+                'action': 'Trigger focused field leadership walkthrough and toolbox talk on top recurring observation types.',
+                'rationale': 'Statistical leading indicator: unsafe observation trajectory positive before incidents.',
+            })
+        if hipo_14 > 0:
+            preventive_recommendations.append({
+                'priority': 1,
+                'domain': 'safety',
+                'action': 'HIPO review board: barrier analysis and verification of controls within 48 hours.',
+                'rationale': f'{hipo_14} HIPO-level signal(s) in the analysis window.',
+            })
+
+        # --- TWL stress (7d) ---
+        twl_where = 'WHERE t.reading_date >= ? AND t.reading_date <= ?'
+        twl_p = [d7, target_date]
+        if area_id:
+            twl_where += ' AND t.area_id = ?'
+            twl_p.append(area_id)
+        elif division_id:
+            twl_where += ''' AND t.area_id IN (SELECT a.id FROM areas a WHERE a.division_id = ?)'''
+            twl_p.append(division_id)
+
+        twl_total = db_fetchone(conn, f'SELECT COUNT(*) as c FROM twl_readings t {twl_where}', twl_p)['c'] or 1
+        twl_high_c = db_fetchone(conn, f"SELECT COUNT(*) as c FROM twl_readings t {twl_where} AND t.risk_zone = 'high'", twl_p)['c']
+        twl_high_pct = (twl_high_c / twl_total) * 100
+        env_score = min(15, int(twl_high_pct * 0.12) + twl_high_c * 2)
+        domains['environmental'] = {
+            'score': env_score,
+            'trend': 'stable',
+            'summary': f'{twl_high_c} high-risk TWL readings in last 7 days ({twl_high_pct:.0f}% of readings in scope)',
+        }
+        if twl_high_pct > 15 and twl_total >= 5:
+            predictive_signals.append({
+                'type': 'predictive',
+                'severity': 'high',
+                'title': 'Thermal stress exposure elevated',
+                'detail': 'Share of high-risk TWL readings suggests heat strain risk for outdoor/heavy work — expect fatigue-related errors if unmitigated.',
+                'horizon_days': 3,
+                'confidence': 0.72,
+            })
+            preventive_recommendations.append({
+                'priority': 2,
+                'domain': 'environmental',
+                'action': 'Enforce work-rest cycles, hydration points, and reschedule heavy work outside peak heat.',
+                'rationale': 'Environmental leading indicator correlates with safety and health incidents in hot seasons.',
+            })
+
+        # --- Cross: attendance + thermal ---
+        am_today = db_fetchone(conn, f'''SELECT COUNT(DISTINCT att.employee_no) as c
+            FROM attendance att JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+            LEFT JOIN projects p ON p.id = att.project_id LEFT JOIN areas ar ON ar.id = p.area_id
+            WHERE att.scan_date = ? AND att.session = 'AM' AND e.active = 1''' + (
+            ' AND att.project_id = ?' if project_id else (' AND p.area_id = ?' if area_id else (' AND ar.division_id = ?' if division_id else ''))),
+            [target_date] + ([project_id] if project_id else [area_id] if area_id else [division_id] if division_id else []))['c']
+        cross_score = 0
+        if twl_high_c > 0 and total_emp > 20 and am_today > total_emp * 0.65:
+            cross_score = min(10, 6 + twl_high_c)
+            predictive_signals.append({
+                'type': 'predictive',
+                'severity': 'critical',
+                'title': 'Compound risk: heat + high site occupancy',
+                'detail': f'{am_today} workers on site while TWL readings include high-risk zones — elevated heat illness and human error risk.',
+                'horizon_days': 1,
+                'confidence': 0.78,
+            })
+            preventive_recommendations.append({
+                'priority': 1,
+                'domain': 'cross_cutting',
+                'action': 'Consider temporary reduction of non-essential outdoor work; brief supervisors on heat emergency response.',
+                'rationale': 'Cross-domain correlation: environmental stress × headcount.',
+            })
+        domains['cross_cutting'] = {'score': cross_score, 'trend': 'stable', 'summary': 'Correlated attendance × environment signals' if cross_score else 'No compound signal'}
+
+        risk_index = min(100, att_score + health_score + safety_score + env_score + cross_score)
+        risk_level = _risk_level_from_index(risk_index)
+
+        preventive_recommendations.sort(key=lambda x: x['priority'])
+
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        predictive_signals.sort(key=lambda s: severity_order.get(s.get('severity', 'low'), 9))
+
+    finally:
+        conn.close()
+
+    return jsonify({
+        'date': target_date,
+        'risk_index': risk_index,
+        'risk_level': risk_level,
+        'domains': domains,
+        'predictive_signals': predictive_signals,
+        'preventive_recommendations': preventive_recommendations,
+        'methodology': 'Rule-based leading indicators + 14d linear trends on attendance and unsafe observations; not a certified ML model.',
     })
 
 

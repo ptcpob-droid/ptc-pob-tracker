@@ -1044,6 +1044,7 @@ function refreshDashboard() {
     loadDashCharts();
     loadPersonnel('present');
     loadAnomalies();
+    loadRiskEngine();
 }
 
 async function loadDashboard() {
@@ -1657,6 +1658,87 @@ async function loadAnomalies() {
             list.style.display = isHidden ? '' : 'none';
             toggleBtn.textContent = isHidden ? 'Collapse' : 'Expand';
         });
+    }
+}
+
+async function loadRiskEngine() {
+    const panel = $('#risk-engine-panel');
+    const ring = $('#risk-gauge-ring');
+    const idxEl = $('#risk-index-value');
+    const levelEl = $('#risk-engine-level');
+    const domainsEl = $('#risk-domains');
+    const predEl = $('#risk-predictive-list');
+    const prevEl = $('#risk-preventive-list');
+    if (!panel || !ring || !idxEl) return;
+
+    const selectedDate = getSliderDate();
+    const filterParams = getDashFilterParams();
+    let url = `/risk-engine?date=${selectedDate}`;
+    if (filterParams) url += '&' + filterParams;
+
+    const data = await api(url);
+    if (!data || data.risk_index === undefined) {
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = '';
+
+    const ri = Math.min(100, Math.max(0, data.risk_index));
+    ring.style.setProperty('--risk-pct', String(ri));
+    idxEl.textContent = String(ri);
+
+    const lvl = data.risk_level || 'low';
+    if (levelEl) {
+        levelEl.textContent = lvl.toUpperCase();
+        levelEl.className = 'risk-level-badge risk-lvl-' + lvl;
+    }
+
+    const domainLabels = {
+        attendance: 'Attendance',
+        health: 'Health',
+        safety: 'Safety (O&I)',
+        environmental: 'Environment (TWL)',
+        cross_cutting: 'Cross-cutting',
+    };
+    if (domainsEl && data.domains) {
+        domainsEl.innerHTML = Object.entries(data.domains).map(([key, d]) => {
+            const max = key === 'safety' ? 30 : key === 'attendance' ? 25 : key === 'health' ? 20 : key === 'environmental' ? 15 : 10;
+            const pct = Math.min(100, ((d.score || 0) / max) * 100);
+            const tr = d.trend || 'stable';
+            const trIcon = tr === 'worsening' ? '↓' : tr === 'improving' ? '↑' : '→';
+            return `<div class="risk-domain-row">
+                <div class="risk-domain-name">${domainLabels[key] || key} <span class="risk-trend-${tr}">${trIcon} ${tr}</span></div>
+                <div class="risk-domain-bar-wrap"><div class="risk-domain-bar" style="width:${pct}%"></div></div>
+                <div class="risk-domain-meta">${d.score || 0}/${max} · ${esc(d.summary || '')}</div>
+            </div>`;
+        }).join('');
+    }
+
+    if (predEl) {
+        const sigs = data.predictive_signals || [];
+        if (!sigs.length) {
+            predEl.innerHTML = '<div class="empty-state" style="padding:8px;font-size:0.85rem">No predictive signals for this scope — conditions appear stable on trend metrics.</div>';
+        } else {
+            predEl.innerHTML = sigs.map(s => `
+                <div class="risk-signal-card sev-${s.severity || 'low'}">
+                    <div class="risk-signal-top">
+                        <span class="risk-signal-type">${esc(s.type || 'signal')}</span>
+                        <span class="risk-signal-conf">${s.confidence != null ? Math.round((s.confidence) * 100) + '% conf.' : ''}</span>
+                        <span class="risk-signal-horizon">${s.horizon_days != null ? '~' + s.horizon_days + 'd horizon' : ''}</span>
+                    </div>
+                    <div class="risk-signal-title">${esc(s.title)}</div>
+                    <div class="risk-signal-detail">${esc(s.detail)}</div>
+                </div>`).join('');
+        }
+    }
+
+    if (prevEl) {
+        const acts = data.preventive_recommendations || [];
+        if (!acts.length) {
+            prevEl.innerHTML = '<li class="empty-state" style="list-style:none">No extra preventive actions suggested beyond routine HSE cadence.</li>';
+        } else {
+            prevEl.innerHTML = acts.map(a => `<li><span class="risk-act-priority">P${a.priority}</span> <strong>${esc(a.domain)}</strong>: ${esc(a.action)} <span class="risk-act-rationale">— ${esc(a.rationale)}</span></li>`).join('');
+        }
     }
 }
 
