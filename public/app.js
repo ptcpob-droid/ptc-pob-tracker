@@ -108,6 +108,7 @@ function showApp() {
     $('#health-tab').style.display = admin ? '' : 'none';
     $('#twl-tab').style.display = admin ? '' : 'none';
     $('#oi-tab').style.display = admin ? '' : 'none';
+    $('#risk-tab').style.display = admin ? '' : 'none';
     $('#workforce-tab').style.display = admin ? '' : 'none';
     const scannerTab = document.querySelector('.tab[data-tab="scanner"]');
     const dashTab = document.querySelector('.tab[data-tab="dashboard"]');
@@ -560,11 +561,14 @@ function initSetup() {
         state.projectId = projectSelect.value;
         state.projectName = projectSelect.options[projectSelect.selectedIndex].dataset.name;
 
+        // Site is hidden from scanner UI; resolve quietly. If none exists, the server will
+        // auto-provision a default site at scan-time, so don't block sign-in.
         if (!state.siteId) {
-            const site = await resolveProjectSite(state.projectId);
-            if (site) { state.siteId = site.id; state.siteName = site.name; }
+            try {
+                const site = await resolveProjectSite(state.projectId);
+                if (site) { state.siteId = site.id; state.siteName = site.name; }
+            } catch (_) { /* ignore — server handles fallback */ }
         }
-        if (!state.siteId) return toast('No site configured for this project', 'error');
 
         localStorage.setItem('pob_setup', JSON.stringify({
             projectId: state.projectId, projectName: state.projectName,
@@ -614,7 +618,14 @@ function initSetup() {
 
 function updateScannerHeader() {
     $('#current-project-name').textContent = state.projectName;
-    $('#current-site-name').textContent = state.siteName;
+    // Site is hidden from the scanner UI now (auto-resolved on the server). Only show the label
+    // if there are actually multiple distinct sites worth disambiguating per project.
+    const siteEl = $('#current-site-name');
+    if (siteEl) {
+        const isDefault = !state.siteName || /^main$/i.test(state.siteName);
+        siteEl.textContent = isDefault ? '' : state.siteName;
+        siteEl.style.display = isDefault ? 'none' : '';
+    }
     const lbl = $('#current-session-label');
     lbl.textContent = SESSION_LABELS[state.session] || state.session;
     lbl.className = `badge badge-${(state.session || 'am').toLowerCase()}`;
@@ -779,7 +790,7 @@ async function processScan(decodedText) {
         }
     }
 
-    if (!state.projectId || !state.siteId) return;
+    if (!state.projectId) return;
 
     const resultDiv = $('#scan-result');
     resultDiv.style.display = 'block';
@@ -791,7 +802,7 @@ async function processScan(decodedText) {
             method: 'POST',
             body: JSON.stringify({
                 employee_no: employeeNo, project_id: state.projectId,
-                site_id: state.siteId, session: state.session
+                site_id: state.siteId || null, session: state.session
             })
         });
 
@@ -835,7 +846,8 @@ function addRecentScan(emp) {
 
 async function loadTodayCount() {
     try {
-        const data = await api(`/headcount?project_id=${state.projectId}&site_id=${state.siteId}&session=${state.session}`);
+        const siteParam = state.siteId ? `&site_id=${state.siteId}` : '';
+        const data = await api(`/headcount?project_id=${state.projectId}${siteParam}&session=${state.session}`);
         if (data.sites && data.sites.length > 0) {
             state.scanCount = (data.sites && data.sites[0]) ? (data.sites[0][state.session] ?? 0) : 0;
             state.totalEmployees = data.sites[0].total_employees || 0;
@@ -1438,7 +1450,6 @@ function refreshDashboard() {
     loadDashCharts();
     loadPersonnel('present');
     loadAnomalies();
-    loadRiskEngine();
 }
 
 async function loadDashboard() {
@@ -2057,6 +2068,15 @@ async function loadAnomalies() {
             toggleBtn.textContent = isHidden ? 'Collapse' : 'Expand';
         });
     }
+}
+
+let _riskTabInited = false;
+function initRiskTab() {
+    if (!_riskTabInited) {
+        $('#risk-engine-refresh')?.addEventListener('click', loadRiskEngine);
+        _riskTabInited = true;
+    }
+    loadRiskEngine();
 }
 
 async function loadRiskEngine() {
@@ -3279,6 +3299,7 @@ function initTabs() {
             else if (target === 'health') { initHealthTrends(); }
             else if (target === 'twl') { initTWLTab(); }
             else if (target === 'oi') { initOITab(); }
+            else if (target === 'risk') { initRiskTab(); }
             else if (target === 'admin') { if (!adminInit) { initAdmin(); adminInit = true; } else loadAdmin(); }
             else if (target === 'scanner' && !state.scanning) startScanner();
         });

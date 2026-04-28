@@ -134,6 +134,14 @@ def set_security_headers(response):
         "img-src 'self' data:; "
         "connect-src 'self'"
     )
+    # Force browser to revalidate static assets so PWA updates are picked up immediately.
+    # Without this, Flask's default `Cache-Control: public, max-age=43200` traps users on
+    # stale index.html / app.js / sw.js for up to 12 hours.
+    path = (request.path or '')
+    if path == '/' or path.endswith(('.html', '.js', '.css', '.json', '.svg')):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
     return response
 
 # ============================================================
@@ -2195,6 +2203,27 @@ def api_add_project():
         conn.close()
 
 
+def _ensure_default_site(conn, project_id):
+    """Return a site row for the given project. If none exist, auto-create 'Main' so scanners
+    don't get blocked. Used by /api/sites and /api/scan to keep site invisible to the user."""
+    if not project_id:
+        return None
+    try:
+        pid = int(project_id)
+    except (TypeError, ValueError):
+        return None
+    site = db_fetchone(conn, 'SELECT * FROM sites WHERE project_id = ? AND active = 1 ORDER BY id LIMIT 1', (pid,))
+    if site:
+        return site
+    try:
+        db_execute(conn, 'INSERT INTO sites (name, project_id, description, active) VALUES (?, ?, ?, 1)',
+                   ('Main', pid, 'Auto-created default site'))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    return db_fetchone(conn, 'SELECT * FROM sites WHERE project_id = ? AND active = 1 ORDER BY id LIMIT 1', (pid,))
+
+
 @app.route('/api/sites')
 @require_auth
 def api_sites():
@@ -2209,6 +2238,12 @@ def api_sites():
         query, params = apply_project_filter(conn, query, params, request.user, 's')
         query += ' ORDER BY s.name'
         rows = db_fetchall(conn, query, params)
+        # Site selection is now hidden from scanners. Auto-provision a default if none exist
+        # so the scanner can sign in after picking just project + session.
+        if project_id and not rows:
+            default_site = _ensure_default_site(conn, project_id)
+            if default_site:
+                rows = [default_site]
     finally:
         conn.close()
     return jsonify(rows)
@@ -2467,7 +2502,7 @@ def api_scan():
             pass
 
     VALID_SESSIONS = ('AM', 'PM', 'EV')  # 9 AM, 2 PM, 6 PM
-    if not employee_no or not project_id or not site_id or session not in VALID_SESSIONS:
+    if not employee_no or not project_id or session not in VALID_SESSIONS:
         return jsonify({'success': False, 'message': 'Missing fields'}), 400
 
     # Focal points (ADNOC Onshore): view-only, cannot scan
@@ -2479,9 +2514,15 @@ def api_scan():
         if not check_project_access(conn, user, project_id):
             return jsonify({'success': False, 'message': 'No access to this area'}), 403
 
-        site = db_fetchone(conn, 'SELECT id FROM sites WHERE id = ? AND project_id = ?', (site_id, project_id))
+        # Site is hidden from scanner UI: resolve (or auto-create) a default site for this project.
+        site = None
+        if site_id:
+            site = db_fetchone(conn, 'SELECT id FROM sites WHERE id = ? AND project_id = ?', (site_id, project_id))
         if not site:
-            return jsonify({'success': False, 'message': 'Invalid site for this project'}), 400
+            site = _ensure_default_site(conn, project_id)
+            if not site:
+                return jsonify({'success': False, 'message': 'No site available for this project'}), 400
+        site_id = site['id']
 
         emp = db_fetchone(conn, 'SELECT * FROM employees WHERE employee_no = ? AND project_id = ?', (employee_no, project_id))
         if not emp:
