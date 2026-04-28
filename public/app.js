@@ -144,6 +144,7 @@ function doLogout(expired = false) {
 function initLogin() {
     const loginBtn = $('#login-btn');
     const errorDiv = $('#login-error');
+    const backMainBtn = $('#login-back-main');
     let loginMode = 'scanner';
 
     const scannerFields = $('#login-scanner-fields');
@@ -151,9 +152,25 @@ function initLogin() {
     const modeScanner = $('#login-mode-scanner');
     const modeAdmin = $('#login-mode-admin');
 
+    function setError(message) {
+        errorDiv.textContent = message || '';
+        if (backMainBtn) backMainBtn.style.display = message ? '' : 'none';
+    }
+
+    function resetToMain() {
+        setError('');
+        ['#login-username', '#login-pin', '#login-admin-username', '#login-totp'].forEach(sel => {
+            const el = $(sel);
+            if (el) el.value = '';
+        });
+        setMode('scanner');
+        const u = $('#login-username');
+        if (u) u.focus();
+    }
+
     function setMode(mode) {
         loginMode = mode;
-        errorDiv.textContent = '';
+        setError('');
         if (mode === 'scanner') {
             scannerFields.style.display = '';
             adminFields.style.display = 'none';
@@ -168,20 +185,21 @@ function initLogin() {
     }
     modeScanner.addEventListener('click', () => setMode('scanner'));
     modeAdmin.addEventListener('click', () => setMode('admin'));
+    if (backMainBtn) backMainBtn.addEventListener('click', resetToMain);
 
     async function doLogin() {
-        errorDiv.textContent = '';
+        setError('');
         let body;
         if (loginMode === 'scanner') {
             const username = $('#login-username').value.trim();
             const pin = $('#login-pin').value.trim();
-            if (!username || !pin) { errorDiv.textContent = 'Enter username and PIN'; return; }
+            if (!username || !pin) { setError('Enter username and PIN'); return; }
             body = { username, pin, login_mode: 'scanner' };
         } else {
             const username = $('#login-admin-username').value.trim();
             const totp_code = $('#login-totp').value.trim();
-            if (!username || !totp_code) { errorDiv.textContent = 'Enter username and 2FA code'; return; }
-            if (totp_code.length !== 6 || !/^\d+$/.test(totp_code)) { errorDiv.textContent = 'Enter the 6-digit code from your authenticator app'; return; }
+            if (!username || !totp_code) { setError('Enter username and 2FA code'); return; }
+            if (totp_code.length !== 6 || !/^\d+$/.test(totp_code)) { setError('Enter the 6-digit code from your authenticator app'); return; }
             body = { username, totp_code, login_mode: 'admin' };
         }
 
@@ -206,10 +224,10 @@ function initLogin() {
                 showApp();
                 toast(`Welcome, ${data.user.display_name}`, 'success');
             } else {
-                errorDiv.textContent = data.message;
+                setError(data.message || 'Sign-in failed');
             }
         } catch (e) {
-            errorDiv.textContent = 'Connection error. Is the server running?';
+            setError('Connection error. Is the server running?');
         }
         loginBtn.disabled = false;
         loginBtn.textContent = 'Sign in';
@@ -429,35 +447,45 @@ async function loadProjects(selectEl, includeAll = false, areaId = null, divisio
     return projects;
 }
 
-async function loadSitesForProject(selectEl, projectId) {
-    if (!projectId) {
-        selectEl.innerHTML = '<option value="">Select project first</option>';
-        selectEl.disabled = true;
-        return [];
-    }
+async function resolveProjectSite(projectId) {
+    if (!projectId) return null;
     const sites = await api(`/sites?project_id=${projectId}`);
-    if (!Array.isArray(sites)) return [];
-    selectEl.innerHTML = '<option value="">-- Select Site --</option>';
-    sites.forEach(s => {
-        const opt = document.createElement('option');
-        opt.value = s.id;
-        opt.textContent = s.name;
-        selectEl.appendChild(opt);
-    });
-    selectEl.disabled = false;
-    return sites;
+    if (!Array.isArray(sites) || !sites.length) return null;
+    return { id: String(sites[0].id), name: sites[0].name || '' };
 }
 
 function initSetup() {
+    const legacySite = document.getElementById('setup-site');
+    if (legacySite) {
+        const legacyGroup = legacySite.closest('.form-group');
+        if (legacyGroup) legacyGroup.remove(); else legacySite.remove();
+    }
+    const setupOverlayDesc = document.querySelector('#setup-overlay .overlay-content > p');
+    if (setupOverlayDesc && /site/i.test(setupOverlayDesc.textContent)) {
+        setupOverlayDesc.textContent = 'Select division, then area, then project and session (all required)';
+    }
+
     const divisionSelect = $('#setup-division');
     const areaSelect = $('#setup-area');
     const projectSelect = $('#setup-project');
-    const siteSelect = $('#setup-site');
+
+    if (!document.getElementById('setup-back')) {
+        const confirmBtn = document.getElementById('setup-confirm');
+        if (confirmBtn && confirmBtn.parentNode) {
+            const backBtn = document.createElement('button');
+            backBtn.id = 'setup-back';
+            backBtn.className = 'btn btn-outline';
+            backBtn.style.marginTop = '8px';
+            backBtn.style.width = '100%';
+            backBtn.textContent = 'Back to Sign In';
+            confirmBtn.parentNode.insertBefore(backBtn, confirmBtn.nextSibling);
+        }
+    }
 
     function updateSetupConfirmState() {
         const btn = $('#setup-confirm');
         if (!btn) return;
-        const ok = divisionSelect.value && areaSelect.value && projectSelect.value && siteSelect.value;
+        const ok = divisionSelect.value && areaSelect.value && projectSelect.value;
         btn.disabled = !ok;
     }
     (async () => {
@@ -476,8 +504,8 @@ function initSetup() {
                     await loadProjects(projectSelect);
                 }
                 projectSelect.value = p.id;
-                await loadSitesForProject(siteSelect, p.id);
-                if (siteSelect.options.length > 0) siteSelect.selectedIndex = 1;
+                const site = await resolveProjectSite(p.id);
+                if (site) { state.siteId = site.id; state.siteName = site.name; }
                 updateSetupConfirmState();
             }
         }
@@ -488,23 +516,24 @@ function initSetup() {
         areaSelect.value = '';
         projectSelect.innerHTML = '<option value="">Select area first</option>';
         projectSelect.disabled = true;
-        siteSelect.innerHTML = '<option value="">Select project first</option>';
-        siteSelect.disabled = true;
+        state.siteId = null;
+        state.siteName = '';
     });
     areaSelect.addEventListener('change', async () => {
         const areaId = areaSelect.value;
         await loadProjects(projectSelect, false, areaId || null, null);
         if (!areaId) projectSelect.disabled = true;
-        siteSelect.innerHTML = '<option value="">Select project first</option>';
-        siteSelect.disabled = true;
+        state.siteId = null;
+        state.siteName = '';
     });
-    projectSelect.addEventListener('change', () => {
-        loadSitesForProject(siteSelect, projectSelect.value);
+    projectSelect.addEventListener('change', async () => {
+        const site = await resolveProjectSite(projectSelect.value);
+        state.siteId = site ? site.id : null;
+        state.siteName = site ? site.name : '';
         updateSetupConfirmState();
     });
     divisionSelect.addEventListener('change', () => setTimeout(updateSetupConfirmState, 0));
     areaSelect.addEventListener('change', () => setTimeout(updateSetupConfirmState, 0));
-    siteSelect.addEventListener('change', updateSetupConfirmState);
 
     const auto = sessionByHour();
     $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === auto));
@@ -518,16 +547,24 @@ function initSetup() {
         });
     });
 
-    $('#setup-confirm').addEventListener('click', () => {
+    $('#setup-back')?.addEventListener('click', () => {
+        if (state.scanner) { try { state.scanner.stop(); } catch (e) {} state.scanning = false; }
+        doLogout();
+    });
+
+    $('#setup-confirm').addEventListener('click', async () => {
         if (!divisionSelect.value) return toast('Select a division', 'error');
         if (!areaSelect.value) return toast('Select an area', 'error');
         if (!projectSelect.value) return toast('Select a project', 'error');
-        if (!siteSelect.value) return toast('Select a site', 'error');
 
         state.projectId = projectSelect.value;
         state.projectName = projectSelect.options[projectSelect.selectedIndex].dataset.name;
-        state.siteId = siteSelect.value;
-        state.siteName = siteSelect.options[siteSelect.selectedIndex].text;
+
+        if (!state.siteId) {
+            const site = await resolveProjectSite(state.projectId);
+            if (site) { state.siteId = site.id; state.siteName = site.name; }
+        }
+        if (!state.siteId) return toast('No site configured for this project', 'error');
 
         localStorage.setItem('pob_setup', JSON.stringify({
             projectId: state.projectId, projectName: state.projectName,
@@ -564,8 +601,10 @@ function initSetup() {
                         await loadProjects(projectSelect);
                     }
                     projectSelect.value = s.projectId;
-                    await loadSitesForProject(siteSelect, s.projectId);
-                    siteSelect.value = s.siteId;
+                    if (!state.siteId) {
+                        const site = await resolveProjectSite(s.projectId);
+                        if (site) { state.siteId = site.id; state.siteName = site.name; }
+                    }
                 }
                 updateSetupConfirmState();
             })();
@@ -712,7 +751,6 @@ async function processScan(decodedText) {
 
     // Unique QR format: "project_id|employee_no" — switch project/site when scanned
     const projectSelect = $('#setup-project');
-    const siteSelect = $('#setup-site');
     if (employeeNo.includes('|')) {
         const [pid, empNo] = employeeNo.split('|').map(s => s.trim());
         if (pid && empNo) {
@@ -722,15 +760,11 @@ async function processScan(decodedText) {
             if (proj) {
                 state.projectId = String(pid);
                 state.projectName = proj.name || '';
-                const sites = await api(`/sites?project_id=${pid}`);
-                if (Array.isArray(sites) && sites.length) {
-                    state.siteId = String(sites[0].id);
-                    state.siteName = sites[0].name || '';
-                    projectSelect.value = state.projectId;
-                    await loadSitesForProject(siteSelect, state.projectId);
-                    siteSelect.value = state.siteId;
-                    const opt = siteSelect.querySelector(`option[value="${state.siteId}"]`);
-                    if (opt) state.siteName = opt.textContent;
+                const site = await resolveProjectSite(pid);
+                if (site) {
+                    state.siteId = site.id;
+                    state.siteName = site.name;
+                    if (projectSelect) projectSelect.value = state.projectId;
                     updateScannerHeader();
                     try {
                         const saved = JSON.parse(localStorage.getItem('pob_setup') || '{}');
@@ -2678,11 +2712,17 @@ function renderMedicalSection(data) {
 function drawMedicalChart(canvas, data) {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    let w = canvas.clientWidth, h = canvas.clientHeight;
+    const fixedH = 260;
+    let w = canvas.clientWidth;
     if (w <= 0) w = canvas.parentElement?.clientWidth || 480;
-    if (h <= 0) h = parseInt(canvas.getAttribute('height'), 10) || 260;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    const h = fixedH;
+    canvas.style.height = h + 'px';
+    canvas.style.maxHeight = h + 'px';
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
 
     const m = data.medical, t = data.total || 1;
     const bars = [
