@@ -2320,10 +2320,11 @@ def api_filter_options():
     One round-trip; the frontend caches per-session."""
     conn = get_db()
     try:
-        def distinct(col, table='employees', where_extra=''):
-            rows = db_fetchall(conn, f'''SELECT DISTINCT {col} AS v FROM {table}
-                WHERE {col} IS NOT NULL AND TRIM({col}) != '' {where_extra}
-                ORDER BY {col}''')
+        def distinct(col, base_where='active = 1', where_extra=''):
+            sql = f'''SELECT DISTINCT {col} AS v FROM employees
+                WHERE {base_where} AND {col} IS NOT NULL AND TRIM({col}) != '' {where_extra}
+                ORDER BY {col}'''
+            rows = db_fetchall(conn, sql)
             return [r['v'] for r in rows]
 
         divisions = db_fetchall(conn, 'SELECT id, name FROM divisions ORDER BY name')
@@ -2338,12 +2339,12 @@ def api_filter_options():
         for r in db_fetchall(conn, "SELECT DISTINCT subcontractor FROM employees WHERE active = 1 AND subcontractor IS NOT NULL AND TRIM(subcontractor) != ''"):
             contractors.add(r['subcontractor'])
 
-        camps = distinct('camp_name', 'employees WHERE active = 1', '')
-        fieldglass = distinct('fieldglass_status', 'employees WHERE active = 1', '')
-        disciplines = distinct('discipline', 'employees WHERE active = 1', '')
-        nationalities = distinct('nationality', 'employees WHERE active = 1', '')
-        chronic = distinct('chronic_condition', 'employees WHERE active = 1',
-                           "AND LOWER(TRIM(chronic_condition)) NOT IN ('none','no','nil','n/a')")
+        camps = distinct('camp_name')
+        fieldglass = distinct('fieldglass_status')
+        disciplines = distinct('discipline')
+        nationalities = distinct('nationality')
+        chronic = distinct('chronic_condition',
+                           where_extra="AND LOWER(TRIM(chronic_condition)) NOT IN ('none','no','nil','n/a')")
 
         age_row = db_fetchone(conn, '''SELECT MIN(CAST(NULLIF(age,'') AS INTEGER)) AS amin,
                                               MAX(CAST(NULLIF(age,'') AS INTEGER)) AS amax
