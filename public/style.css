@@ -1573,13 +1573,22 @@ tr:last-child td { border-bottom: none; }
 .filter-dropzone {
     position: relative;
     min-height: 96px;
+    max-height: 220px;
+    overflow-y: auto;
     background: rgba(8,8,16,0.45);
     border: 1.5px dashed rgba(168,85,247,0.28);
     border-radius: 12px;
     padding: 14px;
     transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
-    overflow: visible;
 }
+.filter-dropzone::-webkit-scrollbar { width: 6px; }
+.filter-dropzone::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.3); border-radius: 3px; }
+.filter-palette {
+    max-height: 220px;
+    overflow-y: auto;
+}
+.filter-palette::-webkit-scrollbar { width: 6px; }
+.filter-palette::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.3); border-radius: 3px; }
 .filter-dropzone.drag-over {
     border-color: rgba(168,85,247,0.85);
     background: rgba(168,85,247,0.06);
@@ -1672,11 +1681,12 @@ tr:last-child td { border-bottom: none; }
 
 /* ----- Popover ----- */
 .filter-popover {
-    position: absolute;
-    z-index: 60;
+    position: fixed;
+    z-index: 1500;
     min-width: 280px;
-    max-width: 340px;
-    max-height: 420px;
+    max-width: 360px;
+    width: max-content;
+    max-height: min(60vh, 480px);
     display: flex;
     flex-direction: column;
     background: linear-gradient(180deg, rgba(22,22,38,0.97), rgba(14,14,26,0.97));

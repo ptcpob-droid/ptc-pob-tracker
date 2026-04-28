@@ -1176,18 +1176,36 @@ function _openPopover(catKey, anchorEl) {
     _activePopoverCat = catKey;
     title.textContent = cat.label;
 
-    // Position popover under the anchor chip
-    const shell = $('#filter-shell');
-    const shellRect = shell.getBoundingClientRect();
-    const aRect = anchorEl.getBoundingClientRect();
-    const top = (aRect.bottom - shellRect.top) + 8;
-    const left = Math.min(
-        Math.max(aRect.left - shellRect.left, 8),
-        Math.max(shellRect.width - 320, 8)
-    );
-    popover.style.top = `${top}px`;
-    popover.style.left = `${left}px`;
+    // Show first (so we can read its real size), then position relative to viewport.
     popover.classList.remove('hidden');
+    popover.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+        const aRect = anchorEl.getBoundingClientRect();
+        const pRect = popover.getBoundingClientRect();
+        const margin = 8;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const popW = Math.min(pRect.width || 320, 360);
+        const popH = Math.min(pRect.height || 320, vh * 0.6);
+
+        const spaceBelow = vh - aRect.bottom - margin;
+        const spaceAbove = aRect.top - margin;
+        let top;
+        if (spaceBelow >= popH || spaceBelow >= spaceAbove) {
+            top = aRect.bottom + margin;
+            // If still doesn't fit, clamp so it stays inside viewport
+            if (top + popH > vh - margin) top = Math.max(margin, vh - popH - margin);
+        } else {
+            top = Math.max(margin, aRect.top - popH - margin);
+        }
+        let left = aRect.left;
+        if (left + popW > vw - margin) left = Math.max(margin, vw - popW - margin);
+        if (left < margin) left = margin;
+
+        popover.style.top = `${top}px`;
+        popover.style.left = `${left}px`;
+        popover.style.visibility = '';
+    });
 
     if (cat.range) {
         search.classList.add('hidden');
