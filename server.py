@@ -2659,24 +2659,62 @@ def api_headcount():
     return jsonify({'date': scan_date, 'total_employees': total, 'sites': list(results.values())})
 
 
+def _attendance_scope_filters(query, params, args, e_alias='e', a_alias=None):
+    """Apply scope filters (division/area/project/contractor/designation/nationality/subcontractor)
+    to a query that already references the employees table (and optionally attendance)."""
+    div_id = args.get('division_id', type=int)
+    area_id = args.get('area_id', type=int)
+    project_id = args.get('project_id')
+    contractor = args.get('contractor') or args.get('subcontractor')
+    designation = args.get('designation')
+    nationality = args.get('nationality')
+
+    if project_id:
+        query += f' AND {e_alias}.project_id = ?'
+        params.append(project_id)
+        if a_alias:
+            query += f' AND {a_alias}.project_id = ?'
+            params.append(project_id)
+    elif area_id:
+        query += f' AND {e_alias}.project_id IN (SELECT id FROM projects WHERE area_id = ?)'
+        params.append(area_id)
+    elif div_id:
+        query += f' AND {e_alias}.project_id IN (SELECT id FROM projects WHERE area_id IN (SELECT id FROM areas WHERE division_id = ?))'
+        params.append(div_id)
+    if contractor:
+        query += f' AND ({e_alias}.subcontractor = ? OR {e_alias}.contractor = ?)'
+        params.extend([contractor, contractor])
+    if designation:
+        query += f' AND {e_alias}.designation = ?'
+        params.append(designation)
+    if nationality:
+        query += f' AND {e_alias}.nationality = ?'
+        params.append(nationality)
+    return query, params
+
+
 @app.route('/api/headcount/detail')
 @require_auth
 def api_headcount_detail():
     scan_date = request.args.get('date', date.today().isoformat())
-    project_id = request.args.get('project_id')
     session = request.args.get('session', '')
 
     conn = get_db()
     try:
-        query = '''SELECT e.name, e.employee_no, e.designation, e.discipline, a.session, a.scanned_at, a.supervisor_name, a.scanner_email, a.scanner_designation
-            FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.scan_date = ?'''
+        query = '''SELECT e.name, e.employee_no, e.designation, e.discipline, e.nationality,
+                e.contractor, e.subcontractor, e.camp_name, e.work_location, e.fieldglass_status,
+                e.age, e.dob, e.eid_passport, e.chronic_condition, e.medical_result,
+                p.name as project_name,
+                a.session, a.scanned_at, a.supervisor_name, a.scanner_email, a.scanner_designation
+            FROM attendance a
+            JOIN employees e ON e.id = a.employee_id
+            LEFT JOIN projects p ON p.id = e.project_id
+            WHERE a.scan_date = ?'''
         params = [scan_date]
-        if project_id:
-            query += ' AND a.project_id = ?'
-            params.append(project_id)
         if session:
             query += ' AND a.session = ?'
             params.append(session.upper())
+        query, params = _attendance_scope_filters(query, params, request.args, 'e', 'a')
         query, params = apply_project_filter(conn, query, params, request.user)
         query += ' ORDER BY a.scanned_at DESC'
         rows = db_fetchall(conn, query, params)
@@ -2689,23 +2727,23 @@ def api_headcount_detail():
 @require_auth
 def api_missing():
     scan_date = request.args.get('date', date.today().isoformat())
-    project_id = request.args.get('project_id')
     session = request.args.get('session', 'AM')
 
     conn = get_db()
     try:
-        query = 'SELECT e.* FROM employees e WHERE e.active = 1'
+        query = '''SELECT e.name, e.employee_no, e.designation, e.discipline, e.nationality,
+                e.contractor, e.subcontractor, e.camp_name, e.work_location, e.fieldglass_status,
+                e.age, e.dob, e.eid_passport, e.chronic_condition, e.medical_result,
+                p.name as project_name
+            FROM employees e
+            LEFT JOIN projects p ON p.id = e.project_id
+            WHERE e.active = 1'''
         params = []
-        if project_id:
-            query += ' AND e.project_id = ?'
-            params.append(project_id)
+        query, params = _attendance_scope_filters(query, params, request.args, 'e')
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
-        query += ' AND e.employee_no NOT IN (SELECT a.employee_no FROM attendance a WHERE a.scan_date = ? AND a.session = ?'
+        query += ' AND e.employee_no NOT IN (SELECT a.employee_no FROM attendance a WHERE a.scan_date = ? AND a.session = ?)'
         params.extend([scan_date, session.upper()])
-        if project_id:
-            query += ' AND a.project_id = ?'
-            params.append(project_id)
-        query += ') ORDER BY e.name'
+        query += ' ORDER BY e.name'
         rows = db_fetchall(conn, query, params)
     finally:
         conn.close()

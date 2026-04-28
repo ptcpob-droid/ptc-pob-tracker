@@ -116,12 +116,118 @@ function showApp() {
     if (role === 'scanner') {
         if (scannerTab) scannerTab.style.display = '';
         if (dashTab) dashTab.style.display = 'none';
-        $('#setup-overlay').classList.remove('hidden');
+        autoSetupScanner();
     } else {
         if (scannerTab) scannerTab.style.display = 'none';
         if (dashTab) dashTab.style.display = '';
         $('#main-content').style.display = 'block';
         if (dashTab) dashTab.click();
+    }
+}
+
+async function autoSetupScanner() {
+    const overlay = $('#setup-overlay');
+    if (overlay) overlay.classList.add('hidden');
+    const allowed = (state.user && state.user.allowed_projects) || [];
+
+    if (!Array.isArray(allowed) || allowed.length === 0) {
+        $('#main-content').style.display = 'block';
+        const reader = $('#qr-reader');
+        if (reader) {
+            reader.innerHTML = '<div class="empty-state" style="padding:40px 20px"><p><strong>No project assigned.</strong></p><p style="font-size:0.85rem;margin-top:8px">Contact your administrator to be assigned to a project before scanning.</p></div>';
+        }
+        toast('No project assigned to your account. Contact admin.', 'error');
+        return;
+    }
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('pob_setup') || 'null'); } catch (e) {}
+
+    const allowedStr = allowed.map(String);
+    const projectId = (saved && saved.projectId && allowedStr.includes(String(saved.projectId)))
+        ? String(saved.projectId)
+        : String(allowed[0]);
+
+    let projects = [];
+    try {
+        const r = await api('/projects');
+        if (Array.isArray(r)) projects = r;
+    } catch (e) {}
+    const proj = projects.find(p => String(p.id) === projectId);
+    if (!proj) {
+        $('#main-content').style.display = 'block';
+        const reader = $('#qr-reader');
+        if (reader) {
+            reader.innerHTML = '<div class="empty-state" style="padding:40px 20px"><p><strong>Assigned project not found.</strong></p><p style="font-size:0.85rem;margin-top:8px">Your project may have been removed. Contact your administrator.</p></div>';
+        }
+        toast('Assigned project not found. Contact admin.', 'error');
+        return;
+    }
+
+    await applyScannerProject(proj, projects);
+    populateScannerProjectSwitcher(projects, allowedStr);
+
+    $('#main-content').style.display = 'block';
+    if (typeof updateScannerHeader === 'function') updateScannerHeader();
+    if (typeof startScanner === 'function') startScanner();
+    if (typeof loadTodayCount === 'function') loadTodayCount();
+}
+
+async function applyScannerProject(proj, allProjects) {
+    state.projectId = String(proj.id);
+    state.projectName = proj.name || '';
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('pob_setup') || 'null'); } catch (e) {}
+
+    let site = null;
+    if (saved && saved.siteId && String(saved.projectId) === state.projectId) {
+        site = { id: String(saved.siteId), name: saved.siteName || '' };
+    }
+    if (!site && typeof resolveProjectSite === 'function') {
+        site = await resolveProjectSite(proj.id);
+    }
+    if (site) {
+        state.siteId = site.id;
+        state.siteName = site.name;
+    }
+
+    state.session = sessionByHour();
+    $$('.btn-session').forEach(btn => btn.classList.toggle('active', btn.dataset.session === state.session));
+
+    localStorage.setItem('pob_setup', JSON.stringify({
+        projectId: state.projectId, projectName: state.projectName,
+        siteId: state.siteId, siteName: state.siteName, session: state.session
+    }));
+}
+
+function populateScannerProjectSwitcher(allProjects, allowedStr) {
+    const sel = $('#scanner-project-switch');
+    if (!sel) return;
+    if (!Array.isArray(allowedStr) || allowedStr.length <= 1) {
+        sel.style.display = 'none';
+        return;
+    }
+    const myProjects = (allProjects || []).filter(p => allowedStr.includes(String(p.id)));
+    sel.innerHTML = myProjects
+        .map(p => `<option value="${p.id}">${esc(p.name || ('Project ' + p.id))}</option>`)
+        .join('');
+    sel.value = state.projectId;
+    sel.style.display = '';
+
+    if (!sel._bound) {
+        sel._bound = true;
+        sel.addEventListener('change', async () => {
+            const newId = sel.value;
+            const newProj = (allProjects || []).find(p => String(p.id) === String(newId));
+            if (!newProj) return;
+            if (state.scanner) { try { await state.scanner.stop(); } catch (e) {} state.scanning = false; }
+            await applyScannerProject(newProj, allProjects);
+            updateScannerHeader();
+            startScanner();
+            if (typeof loadTodayCount === 'function') loadTodayCount();
+            toast('Switched to ' + (newProj.name || ('project ' + newProj.id)), 'success');
+        });
     }
 }
 
@@ -709,6 +815,14 @@ function updateScannerHeader() {
         const isDefault = !state.siteName || /^main$/i.test(state.siteName);
         siteEl.textContent = isDefault ? '' : state.siteName;
         siteEl.style.display = isDefault ? 'none' : '';
+    }
+    // Scanners never see the legacy "Change" button — multi-project scanners use the inline
+    // project switcher (#scanner-project-switch) instead. Non-scanner roles (admin/manager)
+    // who land on the scanner tab keep the button.
+    const changeBtn = $('#btn-change-setup');
+    if (changeBtn) {
+        const role = state.user?.role;
+        changeBtn.style.display = (role === 'scanner') ? 'none' : '';
     }
     const lbl = $('#current-session-label');
     lbl.textContent = SESSION_LABELS[state.session] || state.session;
@@ -1692,7 +1806,7 @@ async function loadDashQRCodes() {
         <div class="qr-id">${esc(e.employee_no)}</div>
         <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
         ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
-        <div class="qr-handout">Digital HSE & Welfare — present at site</div>
+        <div class="qr-handout">P&TC Digital HSE & Welfare — present at site</div>
         </div>`).join('');
 }
 
@@ -1834,10 +1948,30 @@ function drawStackedBarChart(canvas, data) {
 
     const totalMissing = data.reduce((s, d) => s + d.missing, 0);
     const totalPresent = data.reduce((s, d) => s + d.present, 0);
+
     ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 11px Inter'; ctx.textAlign = 'left';
     ctx.fillText(`${totalMissing} missing`, pad.left, 14);
     ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter';
     ctx.fillText(`/ ${totalPresent + totalMissing} total`, pad.left + ctx.measureText(`${totalMissing} missing`).width + 4, 14);
+
+    const legend = [
+        { label: `Present ${totalPresent}`, color: '#22c55e' },
+        { label: `Missing ${totalMissing}`, color: '#ef4444' }
+    ];
+    ctx.font = '10px Inter, sans-serif';
+    let lw = 0;
+    legend.forEach(l => { lw += 10 + 4 + ctx.measureText(l.label).width + 12; });
+    let lx = w - pad.right - lw + 12;
+    legend.forEach(l => {
+        ctx.fillStyle = l.color;
+        ctx.beginPath();
+        ctx.arc(lx + 4, 10, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#cbcbe0';
+        ctx.textAlign = 'left';
+        ctx.fillText(l.label, lx + 12, 13);
+        lx += 12 + ctx.measureText(l.label).width + 14;
+    });
 
     data.forEach((d, i) => {
         const y = pad.top + i * (barH + gap);
@@ -2573,6 +2707,7 @@ async function loadPersonnel(view = 'present') {
 // TRENDS (line chart + weather + insights)
 // ============================================================
 let _trendsInited = false;
+let _trendsContext = { session: 'AM', total: 0 };
 
 const AREA_COORDS = {
     'BAB':              { lat: 23.67, lon: 54.07, label: 'Bab field' },
@@ -2638,6 +2773,8 @@ async function initTrends() {
 
     const changeEls = ['trend-designation', 'trend-nationality'];
     changeEls.forEach(id => $('#' + id)?.addEventListener('change', loadTrends));
+
+    initAttendanceDetailModal();
     }
     await loadTrends();
 }
@@ -2701,10 +2838,11 @@ async function loadTrends() {
     if (data.designations) { const c = dSel.value; dSel.innerHTML = '<option value="">All Designations</option>' + data.designations.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join(''); dSel.value = c; }
     if (data.nationalities) { const c = nSel.value; nSel.innerHTML = '<option value="">All Nationalities</option>' + data.nationalities.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join(''); nSel.value = c; }
 
-    drawLineChart($('#trend-chart'), data.labels, data.values, data.total);
+    drawLineChart($('#trend-chart'), data.labels, data.values, data.total, { showMissing: true });
     renderInsights(data);
     renderBreakdown(data);
     loadWeather(data.labels);
+    _trendsContext = { session: sess, total: data.total };
 }
 
 function renderInsights(data) {
@@ -2740,19 +2878,170 @@ function renderInsights(data) {
 function renderBreakdown(data) {
     const bd = $('#trend-breakdown');
     if (!bd || !data.labels.length) return;
-    bd.innerHTML = `<table class="worker-table"><thead><tr><th>Date</th><th>Day</th><th>Present</th><th>Total</th><th>%</th><th>Trend</th></tr></thead><tbody>` +
+    const total = data.total || 0;
+    bd.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>Date</th><th>Day</th>
+        <th style="color:#22c55e">Present</th>
+        <th style="color:#ef4444">Missing</th>
+        <th>Total</th><th>%</th><th>Trend</th><th>Details</th>
+        </tr></thead><tbody>` +
         data.labels.map((d, i) => {
-            const v = data.values[i], total = data.total || 1;
-            const pct = Math.round((v / total) * 100);
+            const v = data.values[i] || 0;
+            const missing = Math.max(0, total - v);
+            const pct = total > 0 ? Math.round((v / total) * 100) : 0;
             const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(d).getDay()];
             const isWE = new Date(d).getDay() === 5 || new Date(d).getDay() === 6;
             const prev = i > 0 ? data.values[i - 1] : v;
             const arrow = v > prev ? '↑' : v < prev ? '↓' : '→';
             const arrowColor = v > prev ? '#22c55e' : v < prev ? '#ef4444' : '#94a3b8';
             return `<tr style="${isWE ? 'background:rgba(234,179,8,0.05)' : ''}">
-                <td>${formatHeadcountDate(d)}</td><td>${dow}</td><td><strong>${v}</strong></td><td>${total}</td><td>${pct}%</td>
-                <td style="color:${arrowColor};font-weight:600">${arrow} ${v - prev >= 0 ? '+' : ''}${v - prev}</td></tr>`;
+                <td>${formatHeadcountDate(d)}</td><td>${dow}</td>
+                <td style="color:#22c55e;font-weight:600">${v}</td>
+                <td style="color:#ef4444;font-weight:600">${missing}</td>
+                <td>${total}</td><td>${pct}%</td>
+                <td style="color:${arrowColor};font-weight:600">${arrow} ${v - prev >= 0 ? '+' : ''}${v - prev}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline btn-att-detail" data-date="${esc(d)}" data-view="present" style="padding:2px 8px;font-size:0.7rem;border-color:#22c55e;color:#22c55e">Present</button>
+                    <button class="btn btn-sm btn-outline btn-att-detail" data-date="${esc(d)}" data-view="missing" style="padding:2px 8px;font-size:0.7rem;border-color:#ef4444;color:#ef4444;margin-left:4px">Missing</button>
+                </td></tr>`;
         }).join('') + '</tbody></table>';
+
+    bd.querySelectorAll('.btn-att-detail').forEach(btn => {
+        btn.addEventListener('click', () => {
+            openAttendanceDetail(btn.dataset.date, btn.dataset.view);
+        });
+    });
+}
+
+// ============================================================
+// ATTENDANCE DETAILS MODAL (Present / Missing for a given date)
+// ============================================================
+let _attDetailState = { date: '', view: 'present', rows: { present: [], missing: [] }, counts: { present: 0, missing: 0 } };
+
+async function openAttendanceDetail(dateStr, view) {
+    const modal = $('#attendance-detail-modal');
+    if (!modal) return;
+    _attDetailState.date = dateStr;
+    _attDetailState.view = view || 'present';
+
+    const sess = (_trendsContext.session || 'AM').toUpperCase();
+    const baseParams = new URLSearchParams();
+    const fp = getTrendFilterParams();
+    if (fp) fp.split('&').forEach(p => { const [k, v] = p.split('='); if (k) baseParams.set(k, v); });
+    const desig = $('#trend-designation')?.value;
+    const nat = $('#trend-nationality')?.value;
+    if (desig) baseParams.set('designation', desig);
+    if (nat) baseParams.set('nationality', nat);
+    baseParams.set('date', dateStr);
+    baseParams.set('session', sess);
+
+    $('#att-detail-title').textContent = `Attendance Details — ${formatHeadcountDate(dateStr)}`;
+    const sub = [];
+    sub.push(`Session: ${sess === 'EV' ? 'PM (7 PM)' : 'AM (9 AM)'}`);
+    if (fp) sub.push('Filters applied');
+    $('#att-detail-sub').textContent = sub.join(' · ');
+
+    $('#att-detail-body').innerHTML = '<div class="spinner" style="margin:24px auto"></div>';
+    modal.classList.remove('hidden');
+
+    try {
+        const [present, missing] = await Promise.all([
+            api('/headcount/detail?' + baseParams.toString()),
+            api('/headcount/missing?' + baseParams.toString()),
+        ]);
+        _attDetailState.rows.present = Array.isArray(present) ? present : [];
+        _attDetailState.rows.missing = Array.isArray(missing) ? missing : [];
+        _attDetailState.counts.present = _attDetailState.rows.present.length;
+        _attDetailState.counts.missing = _attDetailState.rows.missing.length;
+        $('#att-detail-present-count').textContent = _attDetailState.counts.present;
+        $('#att-detail-missing-count').textContent = _attDetailState.counts.missing;
+        renderAttendanceDetail();
+    } catch (e) {
+        $('#att-detail-body').innerHTML = `<div class="empty-state">Failed to load: ${esc(e?.message || String(e))}</div>`;
+    }
+}
+
+function renderAttendanceDetail() {
+    const view = _attDetailState.view;
+    $$('#att-detail-tabs .btn-toggle').forEach(b => b.classList.toggle('active', b.dataset.attView === view));
+    const search = ($('#att-detail-search')?.value || '').toLowerCase().trim();
+    let rows = _attDetailState.rows[view] || [];
+    if (search) {
+        rows = rows.filter(r => {
+            const hay = `${r.name || ''} ${r.employee_no || ''} ${r.designation || ''} ${r.discipline || ''} ${r.contractor || ''} ${r.subcontractor || ''} ${r.project_name || ''} ${r.nationality || ''}`.toLowerCase();
+            return hay.includes(search);
+        });
+    }
+    const body = $('#att-detail-body');
+    if (!rows.length) {
+        body.innerHTML = `<div class="empty-state">${view === 'present' ? 'No one scanned' : 'No missing personnel'}</div>`;
+        return;
+    }
+    const isPresent = view === 'present';
+    body.innerHTML = `<table class="worker-table"><thead><tr>
+        <th>#</th><th>Employee No.</th><th>Name</th><th>Designation</th><th>Discipline</th>
+        <th>Contractor</th><th>Project</th><th>Camp</th><th>Work Location</th>
+        <th>Nationality</th><th>Age</th><th>Fieldglass</th><th>Chronic</th>
+        ${isPresent ? '<th>Scanned At</th><th>Supervisor</th>' : '<th>Last Medical</th><th>Medical Result</th>'}
+        </tr></thead><tbody>` +
+        rows.map((r, i) => `<tr>
+            <td>${i + 1}</td>
+            <td>${esc(r.employee_no || '')}</td>
+            <td>${esc(r.name || '')}</td>
+            <td>${esc(r.designation || '')}</td>
+            <td>${esc(r.discipline || '')}</td>
+            <td>${esc(r.contractor || r.subcontractor || '')}</td>
+            <td>${esc(r.project_name || '')}</td>
+            <td>${esc(r.camp_name || '')}</td>
+            <td>${esc(r.work_location || '')}</td>
+            <td>${esc(r.nationality || '')}</td>
+            <td>${esc(r.age || '')}</td>
+            <td>${esc(r.fieldglass_status || '')}</td>
+            <td>${esc(r.chronic_condition || '')}</td>
+            ${isPresent
+                ? `<td>${esc((r.scanned_at || '').slice(11, 19))}</td><td>${esc(r.supervisor_name || '')}</td>`
+                : `<td>${esc(r.last_medical_date || '')}</td><td>${esc(r.medical_result || '')}</td>`}
+        </tr>`).join('') + '</tbody></table>';
+}
+
+function exportAttendanceDetailCSV() {
+    const view = _attDetailState.view;
+    const rows = _attDetailState.rows[view] || [];
+    if (!rows.length) { toast('Nothing to export', 'error'); return; }
+    const isPresent = view === 'present';
+    const headers = ['Employee No.','Name','Designation','Discipline','Contractor','Project','Camp','Work Location','Nationality','Age','Fieldglass','Chronic',
+        ...(isPresent ? ['Scanned At','Supervisor'] : ['Last Medical','Medical Result'])];
+    const csv = [headers.join(',')].concat(
+        rows.map(r => [
+            r.employee_no, r.name, r.designation, r.discipline,
+            r.contractor || r.subcontractor, r.project_name, r.camp_name, r.work_location,
+            r.nationality, r.age, r.fieldglass_status, r.chronic_condition,
+            ...(isPresent ? [(r.scanned_at || '').replace('T', ' '), r.supervisor_name] : [r.last_medical_date, r.medical_result])
+        ].map(v => `"${(v == null ? '' : String(v)).replace(/"/g, '""')}"`).join(','))
+    ).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `attendance_${view}_${_attDetailState.date}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+function initAttendanceDetailModal() {
+    const modal = $('#attendance-detail-modal');
+    if (!modal || modal.dataset.inited) return;
+    modal.dataset.inited = '1';
+    $('#att-detail-close')?.addEventListener('click', () => modal.classList.add('hidden'));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.classList.contains('hidden')) modal.classList.add('hidden'); });
+    $$('#att-detail-tabs .btn-toggle').forEach(b => {
+        b.addEventListener('click', () => {
+            _attDetailState.view = b.dataset.attView;
+            renderAttendanceDetail();
+        });
+    });
+    $('#att-detail-search')?.addEventListener('input', renderAttendanceDetail);
+    $('#att-detail-export')?.addEventListener('click', exportAttendanceDetailCSV);
 }
 
 function getWeatherCoords() {
@@ -2852,7 +3141,7 @@ function drawWeatherChart(canvas, dates, temps, winds, humidity) {
     legend.forEach(([label, color]) => { ctx.fillStyle = color; ctx.fillRect(lx, 6, 14, 3); ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 18, 12); lx += ctx.measureText(label).width + 34; });
 }
 
-function drawLineChart(canvas, labels, values, total) {
+function drawLineChart(canvas, labels, values, total, opts) {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -2862,11 +3151,15 @@ function drawLineChart(canvas, labels, values, total) {
 
     if (!values.length) { ctx.fillStyle = '#8b8aa6'; ctx.font = '14px Inter, sans-serif'; ctx.fillText('No data', w/2 - 25, h/2); return; }
 
-    const pad = { top: 30, right: 20, bottom: 48, left: 50 };
-    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
-    const maxV = Math.max(...values, total || 1, 1);
+    const o = opts || {};
+    const showMissing = !!o.showMissing && Number(total) > 0;
+    const missing = showMissing ? values.map(v => Math.max(0, (total || 0) - v)) : null;
 
-    // Grid lines
+    const pad = { top: 36, right: 20, bottom: 48, left: 50 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+    let maxV = Math.max(...values, total || 1, 1);
+    if (missing) maxV = Math.max(maxV, ...missing);
+
     ctx.strokeStyle = 'rgba(148,163,184,0.15)';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
@@ -2876,7 +3169,6 @@ function drawLineChart(canvas, labels, values, total) {
         ctx.fillText(Math.round(maxV * i / 4), pad.left - 6, y + 4);
     }
 
-    // Total line (dashed)
     if (total > 0) {
         const ty = pad.top + ch - (ch * total / maxV);
         ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(59,130,246,0.4)'; ctx.lineWidth = 1;
@@ -2885,33 +3177,54 @@ function drawLineChart(canvas, labels, values, total) {
         ctx.fillText(`Total: ${total}`, pad.left + 4, ty - 4);
     }
 
-    // Line
     const stepX = values.length > 1 ? cw / (values.length - 1) : cw;
-    ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
-    ctx.beginPath();
-    values.forEach((v, i) => {
-        const x = pad.left + i * stepX;
-        const y = pad.top + ch - (ch * v / maxV);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+
+    function plotSeries(series, color, fillRGBA) {
+        ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        series.forEach((v, i) => {
+            const x = pad.left + i * stepX;
+            const y = pad.top + ch - (ch * v / maxV);
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        if (fillRGBA) {
+            const last = series.length - 1;
+            ctx.lineTo(pad.left + last * stepX, pad.top + ch);
+            ctx.lineTo(pad.left, pad.top + ch);
+            ctx.closePath();
+            ctx.fillStyle = fillRGBA; ctx.fill();
+        }
+        series.forEach((v, i) => {
+            const x = pad.left + i * stepX;
+            const y = pad.top + ch - (ch * v / maxV);
+            ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = color; ctx.fill();
+        });
+    }
+
+    plotSeries(values, '#22c55e', 'rgba(34,197,94,0.1)');
+    if (missing) plotSeries(missing, '#ef4444', 'rgba(239,68,68,0.08)');
+
+    const legend = missing
+        ? [ { label: 'Present', color: '#22c55e' }, { label: 'Missing', color: '#ef4444' }, { label: 'Total', color: '#3b82f6', dashed: true } ]
+        : [ { label: 'Present', color: '#22c55e' } ];
+    ctx.font = '11px Inter, sans-serif';
+    let lx = pad.left;
+    legend.forEach(l => {
+        if (l.dashed) {
+            ctx.setLineDash([4, 4]); ctx.strokeStyle = l.color; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(lx, 14); ctx.lineTo(lx + 16, 14); ctx.stroke();
+            ctx.setLineDash([]);
+        } else {
+            ctx.fillStyle = l.color;
+            ctx.beginPath(); ctx.arc(lx + 6, 14, 4, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.fillStyle = '#cbcbe0'; ctx.textAlign = 'left';
+        ctx.fillText(l.label, lx + 22, 18);
+        lx += 22 + ctx.measureText(l.label).width + 14;
     });
-    ctx.stroke();
 
-    // Fill area
-    const last = values.length - 1;
-    ctx.lineTo(pad.left + last * stepX, pad.top + ch);
-    ctx.lineTo(pad.left, pad.top + ch);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(34,197,94,0.1)'; ctx.fill();
-
-    // Dots
-    values.forEach((v, i) => {
-        const x = pad.left + i * stepX;
-        const y = pad.top + ch - (ch * v / maxV);
-        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#22c55e'; ctx.fill();
-    });
-
-    // X labels — day number on top, month name as one word right below (less congestion)
     ctx.textAlign = 'center';
     const step = Math.max(1, Math.floor(labels.length / 7));
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -3751,6 +4064,10 @@ function initTabs() {
     });
 
     $('#btn-change-setup').addEventListener('click', () => {
+        // Scanners never see the legacy setup overlay — their scope is fully driven by their
+        // admin-assigned projects. Non-scanner roles (admin/manager testing the scanner) keep
+        // the old behaviour of opening the overlay.
+        if (state.user?.role === 'scanner') return;
         $('#setup-overlay').classList.remove('hidden');
         $('#main-content').style.display = 'none';
         if (state.scanner) { try { state.scanner.stop(); } catch(e) {} state.scanning = false; }

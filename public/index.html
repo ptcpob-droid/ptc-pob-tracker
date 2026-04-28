@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#07070d">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Digital HSE & Welfare — Headcount, Worker Health Awareness and Analytics</title>
+    <title>P&TC Digital HSE & Welfare — Headcount, Worker Health Awareness and Analytics</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -19,7 +19,7 @@
     <div id="login-screen" class="login-screen">
         <div class="login-box">
             <div class="login-logo">
-                <span class="logo" style="font-size:1.6rem">Digital HSE &amp; Welfare</span>
+                <span class="logo" style="font-size:1.6rem">P&amp;TC Digital HSE &amp; Welfare</span>
                 <span class="logo-sub" style="font-size:0.85rem">Headcount, Worker Health Awareness and Analytics</span>
             </div>
 
@@ -116,7 +116,7 @@
     <!-- Top Bar -->
     <header class="topbar" style="display:none">
         <div class="topbar-left">
-            <span class="logo">Digital HSE &amp; Welfare</span>
+            <span class="logo">P&amp;TC Digital HSE &amp; Welfare</span>
             <span class="logo-sub">Headcount, Worker Health Awareness and Analytics</span>
         </div>
         <div class="topbar-right">
@@ -153,6 +153,28 @@
             </div>
             <button id="setup-confirm" class="btn btn-primary btn-lg" disabled>Start Scanning</button>
             <button id="setup-back" class="btn btn-outline" style="margin-top:8px;width:100%">Back to Main Page</button>
+        </div>
+    </div>
+
+    <!-- Attendance Details Modal (Present / Missing list for a date) -->
+    <div id="attendance-detail-modal" class="overlay hidden">
+        <div class="overlay-content" style="max-width:1100px;width:96vw;max-height:90vh;display:flex;flex-direction:column">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+                <div>
+                    <h2 id="att-detail-title" style="margin:0">Attendance Details</h2>
+                    <div id="att-detail-sub" class="text-dim" style="font-size:0.8rem;margin-top:2px"></div>
+                </div>
+                <div class="toggle-group" id="att-detail-tabs">
+                    <button class="btn-toggle active" data-att-view="present" style="border-color:#22c55e">Present <span id="att-detail-present-count" class="badge" style="margin-left:6px;background:rgba(34,197,94,0.18);color:#22c55e">0</span></button>
+                    <button class="btn-toggle" data-att-view="missing" style="border-color:#ef4444">Missing <span id="att-detail-missing-count" class="badge" style="margin-left:6px;background:rgba(239,68,68,0.18);color:#ef4444">0</span></button>
+                </div>
+                <button id="att-detail-close" class="btn btn-sm btn-outline" style="border-color:var(--danger);color:var(--danger)">Close</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+                <input id="att-detail-search" class="input" placeholder="Search name, employee no, designation..." style="flex:1;min-width:220px;font-size:0.85rem;padding:6px 10px">
+                <button id="att-detail-export" class="btn btn-sm btn-outline">Export CSV</button>
+            </div>
+            <div id="att-detail-body" class="table-wrap" style="flex:1;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
         </div>
     </div>
 
@@ -495,7 +517,8 @@
                     </div>
                     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                         <span id="current-session-label" class="badge badge-am">9 AM</span>
-                        <button id="btn-change-setup" class="btn btn-sm btn-outline">Change</button>
+                        <select id="scanner-project-switch" class="input" style="display:none;padding:4px 8px;font-size:0.8rem;min-width:180px"></select>
+                        <button id="btn-change-setup" class="btn btn-sm btn-outline" style="display:none">Change</button>
                         <button id="btn-scanner-back-main" class="btn btn-sm btn-outline" style="border-color:var(--danger);color:var(--danger)">Back to Main</button>
                     </div>
                 </div>
