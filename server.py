@@ -100,14 +100,23 @@ def redirect_http_to_https():
 
 @app.errorhandler(Exception)
 def _json_error_handler(e):
-    """All API errors must return JSON (the frontend api() expects JSON; an HTML 500 page becomes 'Server returned non-JSON')."""
+    """All API errors must return JSON (the frontend api() expects JSON; an HTML 500 page becomes 'Server returned non-JSON').
+    Includes a short, non-sensitive traceback hint so we can diagnose remotely."""
     if request.path.startswith('/api/'):
         from werkzeug.exceptions import HTTPException
         import traceback
         if isinstance(e, HTTPException):
             return jsonify({'success': False, 'message': e.description, 'status': e.code}), e.code
         traceback.print_exc()
-        return jsonify({'success': False, 'message': f'{type(e).__name__}: {str(e)[:300]}', 'path': request.path}), 500
+        tb = traceback.extract_tb(e.__traceback__)
+        frames = [f"{t.filename.split('/')[-1].split(chr(92))[-1]}:{t.lineno} in {t.name}" for t in tb[-4:]]
+        return jsonify({
+            'success': False,
+            'message': f'{type(e).__name__}: {str(e)[:300]}',
+            'path': request.path,
+            'qs': dict(request.args),
+            'where': frames,
+        }), 500
     raise e
 
 

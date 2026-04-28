@@ -2608,7 +2608,10 @@ async function loadHealthTrends() {
     const p = getHTFilterParams();
     const data = await api('/health-trends' + (p ? '?' + p : ''));
     if (!data || data.success === false || !data.medical) {
-        if (data && data.message) toast(data.message, 'error');
+        if (data && data.message) {
+            toast(data.message, 'error');
+            console.error('health-trends error:', data);
+        }
         return;
     }
     renderHealthOverview(data);
