@@ -98,6 +98,19 @@ def redirect_http_to_https():
 # SECURITY HEADERS
 # ============================================================
 
+@app.errorhandler(Exception)
+def _json_error_handler(e):
+    """All API errors must return JSON (the frontend api() expects JSON; an HTML 500 page becomes 'Server returned non-JSON')."""
+    if request.path.startswith('/api/'):
+        from werkzeug.exceptions import HTTPException
+        import traceback
+        if isinstance(e, HTTPException):
+            return jsonify({'success': False, 'message': e.description, 'status': e.code}), e.code
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'{type(e).__name__}: {str(e)[:300]}', 'path': request.path}), 500
+    raise e
+
+
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
