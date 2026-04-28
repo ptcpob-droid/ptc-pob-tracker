@@ -164,6 +164,11 @@ function initLogin() {
             const el = $(sel);
             if (el) el.value = '';
         });
+        const dv = $('#login-division'); if (dv) dv.value = '';
+        const ar = $('#login-area');
+        if (ar) { ar.innerHTML = '<option value="">Select division first</option>'; ar.disabled = true; }
+        const pr = $('#login-project');
+        if (pr) { pr.innerHTML = '<option value="">Select area first</option>'; pr.disabled = true; }
         setMode('scanner');
         const u = $('#login-username');
         if (u) u.focus();
@@ -188,13 +193,73 @@ function initLogin() {
     modeAdmin.addEventListener('click', () => setMode('admin'));
     if (backMainBtn) backMainBtn.addEventListener('click', resetToMain);
 
+    const divisionSelect = $('#login-division');
+    const areaSelect = $('#login-area');
+    const projectSelect = $('#login-project');
+    let _locations = null;
+
+    async function loadLoginLocations() {
+        if (_locations || !divisionSelect) return;
+        try {
+            const res = await fetch('/api/public/locations');
+            const data = await res.json();
+            if (!data || !data.success) return;
+            _locations = data;
+            divisionSelect.innerHTML = '<option value="">-- Select Division --</option>' +
+                data.divisions.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+        } catch (_) { /* offline / will retry on submit */ }
+    }
+    loadLoginLocations();
+
+    function repopulateAreas(divisionId) {
+        if (!areaSelect) return;
+        if (!divisionId || !_locations) {
+            areaSelect.innerHTML = '<option value="">Select division first</option>';
+            areaSelect.disabled = true;
+            return;
+        }
+        const filtered = _locations.areas.filter(a => String(a.division_id) === String(divisionId));
+        areaSelect.innerHTML = '<option value="">-- Select Area --</option>' +
+            filtered.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+        areaSelect.disabled = false;
+    }
+    function repopulateProjects(areaId) {
+        if (!projectSelect) return;
+        if (!areaId || !_locations) {
+            projectSelect.innerHTML = '<option value="">Select area first</option>';
+            projectSelect.disabled = true;
+            return;
+        }
+        const filtered = _locations.projects.filter(p => String(p.area_id) === String(areaId));
+        projectSelect.innerHTML = '<option value="">-- Select Project --</option>' +
+            filtered.map(p => `<option value="${p.id}" data-name="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+        projectSelect.disabled = false;
+    }
+
+    divisionSelect?.addEventListener('change', () => {
+        repopulateAreas(divisionSelect.value);
+        repopulateProjects('');
+    });
+    areaSelect?.addEventListener('change', () => repopulateProjects(areaSelect.value));
+
     async function doLogin() {
         setError('');
         let body;
+        let scannerSetup = null;
         if (loginMode === 'scanner') {
             const username = $('#login-username').value.trim();
             const pin = $('#login-pin').value.trim();
             if (!username || !pin) { setError('Enter username and PIN'); return; }
+            const divisionId = divisionSelect ? divisionSelect.value : '';
+            const areaId = areaSelect ? areaSelect.value : '';
+            const projectId = projectSelect ? projectSelect.value : '';
+            const projectName = projectSelect && projectSelect.selectedIndex >= 0
+                ? (projectSelect.options[projectSelect.selectedIndex]?.dataset?.name || '')
+                : '';
+            if (!divisionId) { setError('Select a Division'); return; }
+            if (!areaId) { setError('Select an Area'); return; }
+            if (!projectId) { setError('Select a Project'); return; }
+            scannerSetup = { divisionId, areaId, projectId, projectName };
             body = { username, pin, login_mode: 'scanner' };
         } else {
             const username = $('#login-admin-username').value.trim();
@@ -220,6 +285,20 @@ function initLogin() {
                 state.user = data.user;
                 localStorage.setItem('pob_token', data.token);
                 localStorage.setItem('pob_user', JSON.stringify(data.user));
+                if (scannerSetup) {
+                    state.divisionId = scannerSetup.divisionId;
+                    state.areaId = scannerSetup.areaId;
+                    state.projectId = scannerSetup.projectId;
+                    state.projectName = scannerSetup.projectName;
+                    localStorage.setItem('pob_setup', JSON.stringify({
+                        projectId: scannerSetup.projectId,
+                        projectName: scannerSetup.projectName,
+                        divisionId: scannerSetup.divisionId,
+                        areaId: scannerSetup.areaId,
+                        siteId: null, siteName: '',
+                        session: sessionByHour()
+                    }));
+                }
                 $('#login-pin').value = '';
                 $('#login-totp').value = '';
                 showApp();
@@ -2075,13 +2154,154 @@ async function loadAnomalies() {
     }
 }
 
-let _riskTabInited = false;
-function initRiskTab() {
-    if (!_riskTabInited) {
-        $('#risk-engine-refresh')?.addEventListener('click', loadRiskEngine);
-        _riskTabInited = true;
+// ============================================================
+// Risk Engine — independent date/scope, Live + Backtest sub-tabs
+// ============================================================
+const _riskState = {
+    asOf: '',
+    divisionId: '',
+    areaId: '',
+    projectId: '',
+    subTab: 'live',
+    backtestDays: 90,
+    inited: false,
+};
+
+const RISK_DOMAIN_LABELS = {
+    attendance: 'Attendance',
+    health: 'Health',
+    safety: 'Safety (O&I)',
+    environmental: 'Environment (TWL)',
+    cross_cutting: 'Cross-cutting',
+};
+
+function getRiskQueryParams() {
+    const parts = [];
+    if (_riskState.asOf) parts.push('date=' + encodeURIComponent(_riskState.asOf));
+    if (_riskState.projectId) parts.push('project_id=' + encodeURIComponent(_riskState.projectId));
+    else if (_riskState.areaId) parts.push('area_id=' + encodeURIComponent(_riskState.areaId));
+    else if (_riskState.divisionId) parts.push('division_id=' + encodeURIComponent(_riskState.divisionId));
+    return parts.join('&');
+}
+
+async function _populateRiskScopeSelects() {
+    const divSel = $('#risk-division');
+    const areaSel = $('#risk-area');
+    const projSel = $('#risk-project');
+    if (!divSel) return;
+
+    const divs = await api('/divisions');
+    if (Array.isArray(divs)) {
+        divSel.innerHTML = '<option value="">All</option>' +
+            divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
     }
-    loadRiskEngine();
+    areaSel.innerHTML = '<option value="">All</option>';
+    projSel.innerHTML = '<option value="">All</option>';
+}
+
+async function _refreshRiskAreaOptions(divisionId) {
+    const areaSel = $('#risk-area');
+    if (!areaSel) return;
+    if (!divisionId) {
+        areaSel.innerHTML = '<option value="">All</option>';
+        return;
+    }
+    const areas = await api(`/areas?division_id=${divisionId}`);
+    areaSel.innerHTML = '<option value="">All</option>' +
+        (Array.isArray(areas) ? areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') : '');
+}
+
+async function _refreshRiskProjectOptions(areaId, divisionId) {
+    const projSel = $('#risk-project');
+    if (!projSel) return;
+    let url = '/projects';
+    if (areaId) url += `?area_id=${areaId}`;
+    else if (divisionId) url += `?division_id=${divisionId}`;
+    const projs = await api(url);
+    projSel.innerHTML = '<option value="">All</option>' +
+        (Array.isArray(projs) ? projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('') : '');
+}
+
+function initRiskTab() {
+    if (!_riskState.inited) {
+        const today = new Date().toISOString().split('T')[0];
+        _riskState.asOf = today;
+        const asOfInput = $('#risk-asof');
+        if (asOfInput) asOfInput.value = today;
+
+        _populateRiskScopeSelects();
+
+        $('#risk-asof')?.addEventListener('change', e => {
+            _riskState.asOf = e.target.value || new Date().toISOString().split('T')[0];
+            loadRiskEngine();
+        });
+        $('#risk-division')?.addEventListener('change', async e => {
+            _riskState.divisionId = e.target.value;
+            _riskState.areaId = '';
+            _riskState.projectId = '';
+            await _refreshRiskAreaOptions(_riskState.divisionId);
+            await _refreshRiskProjectOptions('', _riskState.divisionId);
+            _refreshRiskActiveSubTab();
+        });
+        $('#risk-area')?.addEventListener('change', async e => {
+            _riskState.areaId = e.target.value;
+            _riskState.projectId = '';
+            await _refreshRiskProjectOptions(_riskState.areaId, _riskState.divisionId);
+            _refreshRiskActiveSubTab();
+        });
+        $('#risk-project')?.addEventListener('change', e => {
+            _riskState.projectId = e.target.value;
+            _refreshRiskActiveSubTab();
+        });
+
+        $('#risk-use-dash')?.addEventListener('click', async () => {
+            const dashDate = (typeof getSliderDate === 'function') ? getSliderDate() : new Date().toISOString().split('T')[0];
+            _riskState.asOf = dashDate;
+            $('#risk-asof').value = dashDate;
+            const fs = (typeof _filterState !== 'undefined' && _filterState) ? _filterState : {};
+            const div = (fs.division && fs.division[0]?.id) || '';
+            const area = (fs.area && fs.area[0]?.id) || '';
+            const proj = (fs.project && fs.project[0]?.id) || '';
+            _riskState.divisionId = String(div || '');
+            _riskState.areaId = String(area || '');
+            _riskState.projectId = String(proj || '');
+            await _refreshRiskAreaOptions(_riskState.divisionId);
+            await _refreshRiskProjectOptions(_riskState.areaId, _riskState.divisionId);
+            $('#risk-division').value = _riskState.divisionId;
+            $('#risk-area').value = _riskState.areaId;
+            $('#risk-project').value = _riskState.projectId;
+            _refreshRiskActiveSubTab();
+            toast('Risk Engine scope synced from Dashboard', 'success');
+        });
+
+        $('#risk-engine-refresh')?.addEventListener('click', () => _refreshRiskActiveSubTab());
+
+        $$('.risk-subtab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                $$('.risk-subtab').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected', 'false'); });
+                $$('.risk-subview').forEach(v => v.classList.remove('active'));
+                btn.classList.add('active');
+                btn.setAttribute('aria-selected', 'true');
+                const target = btn.dataset.rsub;
+                $(`#risk-sub-${target}`)?.classList.add('active');
+                _riskState.subTab = target;
+                _refreshRiskActiveSubTab();
+            });
+        });
+
+        $('#risk-backtest-window')?.addEventListener('change', e => {
+            _riskState.backtestDays = parseInt(e.target.value, 10) || 90;
+            loadRiskBacktest();
+        });
+
+        _riskState.inited = true;
+    }
+    _refreshRiskActiveSubTab();
+}
+
+function _refreshRiskActiveSubTab() {
+    if (_riskState.subTab === 'backtest') loadRiskBacktest();
+    else loadRiskEngine();
 }
 
 async function loadRiskEngine() {
@@ -2094,11 +2314,8 @@ async function loadRiskEngine() {
     const prevEl = $('#risk-preventive-list');
     if (!panel || !ring || !idxEl) return;
 
-    const selectedDate = getSliderDate();
-    const filterParams = getDashFilterParams();
-    let url = `/risk-engine?date=${selectedDate}`;
-    if (filterParams) url += '&' + filterParams;
-
+    const qs = getRiskQueryParams();
+    const url = '/risk-engine' + (qs ? '?' + qs : '');
     const data = await api(url);
     if (!data || data.risk_index === undefined) {
         panel.style.display = 'none';
@@ -2116,21 +2333,19 @@ async function loadRiskEngine() {
         levelEl.className = 'risk-level-badge risk-lvl-' + lvl;
     }
 
-    const domainLabels = {
-        attendance: 'Attendance',
-        health: 'Health',
-        safety: 'Safety (O&I)',
-        environmental: 'Environment (TWL)',
-        cross_cutting: 'Cross-cutting',
-    };
     if (domainsEl && data.domains) {
+        const hr = data.domain_hit_rate || {};
         domainsEl.innerHTML = Object.entries(data.domains).map(([key, d]) => {
             const max = key === 'safety' ? 30 : key === 'attendance' ? 25 : key === 'health' ? 20 : key === 'environmental' ? 15 : 10;
             const pct = Math.min(100, ((d.score || 0) / max) * 100);
             const tr = d.trend || 'stable';
             const trIcon = tr === 'worsening' ? '↓' : tr === 'improving' ? '↑' : '→';
+            const cal = hr[key];
+            const calChip = (cal && cal.evaluated >= 3)
+                ? ` <span class="risk-signal-conf-cal" title="Rolling 90d hit-rate from backtest">90d hit-rate ${cal.hits}/${cal.evaluated} (${Math.round(cal.hit_rate*100)}%)</span>`
+                : '';
             return `<div class="risk-domain-row">
-                <div class="risk-domain-name">${domainLabels[key] || key} <span class="risk-trend-${tr}">${trIcon} ${tr}</span></div>
+                <div class="risk-domain-name">${RISK_DOMAIN_LABELS[key] || key} <span class="risk-trend-${tr}">${trIcon} ${tr}</span>${calChip}</div>
                 <div class="risk-domain-bar-wrap"><div class="risk-domain-bar" style="width:${pct}%"></div></div>
                 <div class="risk-domain-meta">${d.score || 0}/${max} · ${esc(d.summary || '')}</div>
             </div>`;
@@ -2142,16 +2357,23 @@ async function loadRiskEngine() {
         if (!sigs.length) {
             predEl.innerHTML = '<div class="empty-state" style="padding:8px;font-size:0.85rem">No predictive signals for this scope — conditions appear stable on trend metrics.</div>';
         } else {
-            predEl.innerHTML = sigs.map(s => `
+            predEl.innerHTML = sigs.map(s => {
+                const conf = s.confidence != null ? Math.round(s.confidence * 100) : null;
+                const rawConf = s.confidence_raw != null ? Math.round(s.confidence_raw * 100) : null;
+                const calLabel = (rawConf != null && rawConf !== conf)
+                    ? `<span class="risk-signal-conf-cal" title="Auto-calibrated from rolling 90d backtest hit rate">cal. from ${rawConf}%</span>`
+                    : '';
+                return `
                 <div class="risk-signal-card sev-${s.severity || 'low'}">
                     <div class="risk-signal-top">
                         <span class="risk-signal-type">${esc(s.type || 'signal')}</span>
-                        <span class="risk-signal-conf">${s.confidence != null ? Math.round((s.confidence) * 100) + '% conf.' : ''}</span>
+                        <span class="risk-signal-conf">${conf != null ? conf + '% conf.' : ''}</span>${calLabel}
                         <span class="risk-signal-horizon">${s.horizon_days != null ? '~' + s.horizon_days + 'd horizon' : ''}</span>
                     </div>
                     <div class="risk-signal-title">${esc(s.title)}</div>
                     <div class="risk-signal-detail">${esc(s.detail)}</div>
-                </div>`).join('');
+                </div>`;
+            }).join('');
         }
     }
 
@@ -2162,6 +2384,163 @@ async function loadRiskEngine() {
         } else {
             prevEl.innerHTML = acts.map(a => `<li><span class="risk-act-priority">P${a.priority}</span> <strong>${esc(a.domain)}</strong>: ${esc(a.action)} <span class="risk-act-rationale">— ${esc(a.rationale)}</span></li>`).join('');
         }
+    }
+}
+
+async function loadRiskBacktest() {
+    const summaryEl = $('#risk-backtest-summary');
+    const domainsEl = $('#risk-backtest-domains');
+    const confEl = $('#risk-backtest-confusion');
+    const feedEl = $('#risk-backtest-feed');
+    const badgeEl = $('#risk-backtest-badge');
+    const calCanvas = $('#risk-calibration-chart');
+    if (!domainsEl || !feedEl) return;
+
+    const days = _riskState.backtestDays || 90;
+    const parts = ['days=' + days];
+    if (_riskState.projectId) parts.push('project_id=' + _riskState.projectId);
+    else if (_riskState.areaId) parts.push('area_id=' + _riskState.areaId);
+    else if (_riskState.divisionId) parts.push('division_id=' + _riskState.divisionId);
+    const url = '/risk-engine/backtest?' + parts.join('&');
+
+    feedEl.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+    const data = await api(url);
+    if (!data) return;
+
+    const totalEv = data.total_evaluated || 0;
+    const totalSig = data.total_signals || 0;
+    const hr = data.overall_hit_rate || 0;
+    if (summaryEl) {
+        summaryEl.innerHTML = `<strong>${totalSig}</strong> signal${totalSig === 1 ? '' : 's'} in last ${days} days · <strong>${totalEv}</strong> evaluated · overall hit rate <strong>${Math.round(hr * 100)}%</strong>`;
+    }
+    if (badgeEl) badgeEl.textContent = totalEv ? `${Math.round(hr * 100)}%` : '';
+
+    const domainsMap = data.domains || {};
+    const domainKeys = Object.keys(RISK_DOMAIN_LABELS);
+    if (domainsEl) {
+        domainsEl.innerHTML = domainKeys.map(key => {
+            const d = domainsMap[key];
+            if (!d || !d.evaluated) {
+                return `<div class="risk-domain-row">
+                    <div class="risk-domain-name">${RISK_DOMAIN_LABELS[key] || key}</div>
+                    <div class="risk-domain-bar-wrap"><div class="risk-domain-bar" style="width:0%;background:#475569"></div></div>
+                    <div class="risk-domain-meta">No evaluated signals in window</div>
+                </div>`;
+            }
+            const pct = Math.round(d.hit_rate * 100);
+            return `<div class="risk-domain-row">
+                <div class="risk-domain-name">${RISK_DOMAIN_LABELS[key] || key}</div>
+                <div class="risk-domain-bar-wrap"><div class="risk-domain-bar" style="width:${pct}%"></div></div>
+                <div class="risk-domain-meta">${d.hits}/${d.evaluated} correct (${pct}%) · ${d.misses} false positive</div>
+            </div>`;
+        }).join('');
+    }
+
+    if (confEl) {
+        const sevs = ['critical', 'high', 'medium', 'low'];
+        const conf = data.severity_confusion || {};
+        confEl.innerHTML = `<table class="risk-confusion-table">
+            <thead><tr><th>Severity</th><th>True Pos.</th><th>False Pos.</th><th>Pending</th><th>Total</th><th>Hit rate</th></tr></thead>
+            <tbody>${sevs.map(sv => {
+                const c = conf[sv] || {tp:0,fp:0,pending:0,total:0};
+                const rate = c.total - c.pending > 0 ? Math.round((c.tp / (c.total - c.pending)) * 100) : null;
+                return `<tr>
+                    <td><span class="risk-level-badge risk-lvl-${sv}">${sv.toUpperCase()}</span></td>
+                    <td class="rc-tp">${c.tp}</td>
+                    <td class="rc-fp">${c.fp}</td>
+                    <td class="rc-pn">${c.pending}</td>
+                    <td>${c.total}</td>
+                    <td>${rate != null ? rate + '%' : '—'}</td>
+                </tr>`;
+            }).join('')}</tbody></table>`;
+    }
+
+    if (calCanvas) drawCalibrationChart(calCanvas, data.calibration_bins || []);
+
+    if (feedEl) {
+        const feed = data.feed || [];
+        if (!feed.length) {
+            feedEl.innerHTML = '<div class="empty-state" style="padding:14px;font-size:0.85rem">No persisted signals yet. Open the Live tab on different dates so the engine can record signals; they will appear here once their horizon has elapsed.</div>';
+        } else {
+            feedEl.innerHTML = `<table class="risk-feed-table"><thead><tr>
+                <th>As of</th><th>Domain</th><th>Severity</th><th>Title</th><th>Horizon</th><th>Conf.</th><th>Verdict</th><th>Outcome</th>
+            </tr></thead><tbody>${feed.map(s => {
+                const verdict = s.verdict || 'pending';
+                const conf = s.confidence != null ? Math.round(s.confidence * 100) + '%' : '—';
+                return `<tr class="verdict-${verdict}">
+                    <td>${esc(s.as_of_date || '')}</td>
+                    <td>${esc(RISK_DOMAIN_LABELS[s.domain] || s.domain || '')}</td>
+                    <td><span class="risk-level-badge risk-lvl-${s.severity || 'low'}">${(s.severity || 'low').toUpperCase()}</span></td>
+                    <td>${esc(s.title || '')}</td>
+                    <td>${s.horizon_days || '—'}d</td>
+                    <td>${conf}</td>
+                    <td><span class="risk-verdict-badge ${verdict}">${verdict.replace('_', ' ')}</span></td>
+                    <td class="feed-detail">${esc(s.outcome_summary || '—')}</td>
+                </tr>`;
+            }).join('')}</tbody></table>`;
+        }
+    }
+}
+
+function drawCalibrationChart(canvas, bins) {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const fixedH = 240;
+    let w = canvas.clientWidth || canvas.parentElement?.clientWidth || 320;
+    const h = fixedH;
+    canvas.style.height = h + 'px';
+    canvas.style.maxHeight = h + 'px';
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { top: 18, right: 14, bottom: 30, left: 38 };
+    const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
+
+    ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + ch - (ch * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(`${(i*25)}%`, pad.left - 5, y + 3);
+    }
+
+    ctx.strokeStyle = 'rgba(148,163,184,0.45)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top + ch);
+    ctx.lineTo(w - pad.right, pad.top);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const points = bins.filter(b => b.observed != null && b.n > 0);
+    points.forEach(b => {
+        const x = pad.left + b.expected * cw;
+        const y = pad.top + ch - b.observed * ch;
+        const r = Math.min(11, 3 + Math.sqrt(b.n));
+        ctx.fillStyle = 'rgba(168,85,247,0.85)';
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(168,85,247,0.4)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 10px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(b.n), x, y - r - 3);
+    });
+
+    ctx.fillStyle = '#94a3b8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Predicted confidence', pad.left + cw / 2, h - 8);
+    ctx.save();
+    ctx.translate(12, pad.top + ch / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Observed hit rate', 0, 0);
+    ctx.restore();
+
+    if (!points.length) {
+        ctx.fillStyle = '#64748b'; ctx.font = '12px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('No evaluated signals yet — run the engine over time to populate.', pad.left + cw / 2, pad.top + ch / 2);
     }
 }
 

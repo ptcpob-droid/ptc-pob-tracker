@@ -411,6 +411,30 @@ def init_db():
                 remarks TEXT,
                 recorded_by INTEGER REFERENCES users(id),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''',
+            '''CREATE TABLE IF NOT EXISTS engine_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                emitted_at TEXT NOT NULL,
+                as_of_date TEXT NOT NULL,
+                scope_division_id INTEGER,
+                scope_area_id INTEGER,
+                scope_project_id INTEGER,
+                domain TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT,
+                severity TEXT NOT NULL,
+                horizon_days INTEGER NOT NULL,
+                confidence REAL,
+                predicted_metric TEXT,
+                predicted_threshold REAL,
+                predicted_direction TEXT,
+                baseline_value REAL,
+                signature TEXT NOT NULL UNIQUE,
+                evaluated_at TEXT,
+                observed_value REAL,
+                verdict TEXT,
+                outcome_summary TEXT
             )'''
         ]
 
@@ -438,6 +462,10 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_obs_date ON observations(observation_date)',
             'CREATE INDEX IF NOT EXISTS idx_obs_division ON observations(division_id)',
             'CREATE INDEX IF NOT EXISTS idx_obs_group ON observations(observation_group)',
+            'CREATE INDEX IF NOT EXISTS idx_engine_signals_asof ON engine_signals(as_of_date)',
+            'CREATE INDEX IF NOT EXISTS idx_engine_signals_verdict ON engine_signals(verdict)',
+            'CREATE INDEX IF NOT EXISTS idx_engine_signals_domain ON engine_signals(domain)',
+            'CREATE INDEX IF NOT EXISTS idx_engine_signals_eval ON engine_signals(evaluated_at)',
         ]
         for sql in indexes:
             try:
@@ -1975,6 +2003,34 @@ def index():
     return send_from_directory('public', 'index.html')
 
 
+@app.route('/api/public/locations')
+def api_public_locations():
+    """Public list of active divisions, areas, and projects for the scanner login screen.
+    Names of locations are not sensitive (they appear on QR posters/badges), so we expose them
+    here so scanners can select Division/Area/Project before they sign in."""
+    conn = get_db()
+    try:
+        divisions = db_fetchall(conn,
+            'SELECT id, name FROM divisions WHERE active = 1 OR active IS NULL ORDER BY name')
+        areas = db_fetchall(conn, '''SELECT a.id, a.division_id, a.name
+            FROM areas a
+            WHERE (a.active = 1 OR a.active IS NULL)
+            ORDER BY a.name''')
+        projects = db_fetchall(conn, '''SELECT p.id, p.area_id, a.division_id, p.name
+            FROM projects p
+            LEFT JOIN areas a ON a.id = p.area_id
+            WHERE (p.active = 1 OR p.active IS NULL)
+            ORDER BY p.name''')
+    finally:
+        conn.close()
+    return jsonify({
+        'success': True,
+        'divisions': divisions,
+        'areas': areas,
+        'projects': projects,
+    })
+
+
 @app.route('/api/divisions')
 @require_auth
 def api_divisions():
@@ -3383,6 +3439,388 @@ def _risk_level_from_index(score):
     return 'low'
 
 
+def _signal_signature(as_of_date, division_id, area_id, project_id, domain, title):
+    """Stable string identifying a (date, scope, rule). Used to make persistence idempotent."""
+    return '|'.join([
+        as_of_date or '',
+        str(division_id or 0),
+        str(area_id or 0),
+        str(project_id or 0),
+        domain or '',
+        title or '',
+    ])
+
+
+def _persist_engine_signals(conn, signals, as_of_date, division_id, area_id, project_id):
+    """
+    Insert any new predictive signals into engine_signals so they can be backtested.
+    Idempotent: re-running on the same (date, scope, title) is a no-op.
+    Only stores 'predictive'-type signals that have predicted_metric metadata.
+    """
+    emitted_at = datetime.now().isoformat(timespec='seconds')
+    for s in signals:
+        if not s.get('predicted_metric'):
+            continue
+        sig = _signal_signature(as_of_date, division_id, area_id, project_id,
+                                s.get('domain', ''), s.get('title', ''))
+        try:
+            db_execute(conn, '''INSERT OR IGNORE INTO engine_signals
+                (emitted_at, as_of_date, scope_division_id, scope_area_id, scope_project_id,
+                 domain, signal_type, title, detail, severity, horizon_days, confidence,
+                 predicted_metric, predicted_threshold, predicted_direction, baseline_value,
+                 signature)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (emitted_at, as_of_date, division_id, area_id, project_id,
+                 s.get('domain', ''), s.get('type', 'predictive'),
+                 s.get('title', ''), s.get('detail', ''), s.get('severity', 'low'),
+                 int(s.get('horizon_days') or 14), float(s.get('confidence') or 0),
+                 s.get('predicted_metric'), float(s.get('predicted_threshold') or 0),
+                 s.get('predicted_direction', ''), float(s.get('baseline_value') or 0),
+                 sig))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+
+def _evaluate_pending_signals(conn, today_iso):
+    """
+    For every persisted signal whose horizon has elapsed and which hasn't been evaluated,
+    compute the actual outcome and write the verdict.
+    Cheap to run on every page load: it only touches rows that need work.
+    """
+    today = date.fromisoformat(today_iso)
+    rows = db_fetchall(conn,
+        '''SELECT * FROM engine_signals
+           WHERE evaluated_at IS NULL
+           ORDER BY as_of_date ASC LIMIT 500''')
+    for r in rows:
+        as_of = r.get('as_of_date') if isinstance(r, dict) else r['as_of_date']
+        horizon = r.get('horizon_days') if isinstance(r, dict) else r['horizon_days']
+        try:
+            close = date.fromisoformat(as_of) + timedelta(days=int(horizon or 14))
+        except Exception:
+            continue
+        if close > today:
+            continue
+        verdict, observed, summary = _evaluate_signal_outcome(conn, r, close)
+        try:
+            db_execute(conn,
+                '''UPDATE engine_signals
+                   SET evaluated_at = ?, observed_value = ?, verdict = ?, outcome_summary = ?
+                   WHERE id = ?''',
+                (today_iso, float(observed) if observed is not None else None,
+                 verdict, summary,
+                 r.get('id') if isinstance(r, dict) else r['id']))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+
+def _evaluate_signal_outcome(conn, row, close_date):
+    """
+    Domain-specific outcome evaluation.
+    Returns (verdict, observed_value, summary).
+    verdict ∈ {'true_positive', 'false_positive'}.
+    """
+    g = (lambda k: row.get(k) if isinstance(row, dict) else row[k])
+    metric = g('predicted_metric')
+    direction = (g('predicted_direction') or '').lower()
+    threshold = g('predicted_threshold') or 0.0
+    baseline = g('baseline_value') or 0.0
+    div_id = g('scope_division_id')
+    area_id = g('scope_area_id')
+    proj_id = g('scope_project_id')
+    as_of = g('as_of_date')
+    close_iso = close_date.isoformat()
+
+    scope_filters_obs = ''
+    scope_p_obs = []
+    if proj_id:
+        scope_filters_obs = ' AND o.project_id = ?'
+        scope_p_obs = [proj_id]
+    elif area_id:
+        scope_filters_obs = ' AND o.area_id = ?'
+        scope_p_obs = [area_id]
+    elif div_id:
+        scope_filters_obs = ' AND o.division_id = ?'
+        scope_p_obs = [div_id]
+
+    scope_filters_emp = ''
+    scope_p_emp = []
+    if proj_id:
+        scope_filters_emp = ' AND e.project_id = ?'
+        scope_p_emp = [proj_id]
+    elif area_id:
+        scope_filters_emp = ' AND p.area_id = ?'
+        scope_p_emp = [area_id]
+    elif div_id:
+        scope_filters_emp = ' AND ar.division_id = ?'
+        scope_p_emp = [div_id]
+
+    # Outcome window = (as_of, close_date]
+    window_start = as_of
+    window_end = close_iso
+
+    if metric == 'am_attendance_rate':
+        # Did the AM rate stay below the baseline rate during the horizon?
+        total_emp = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM employees e
+                LEFT JOIN projects p ON p.id = e.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE e.active = 1 {scope_filters_emp}''', scope_p_emp)['c'] or 1
+        scope_filters_att = ''
+        scope_p_att = []
+        if proj_id:
+            scope_filters_att = ' AND att.project_id = ?'; scope_p_att = [proj_id]
+        elif area_id:
+            scope_filters_att = ' AND p.area_id = ?'; scope_p_att = [area_id]
+        elif div_id:
+            scope_filters_att = ' AND ar.division_id = ?'; scope_p_att = [div_id]
+        rows = db_fetchall(conn,
+            f'''SELECT att.scan_date as d, COUNT(DISTINCT att.employee_no) as c
+                FROM attendance att
+                JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+                LEFT JOIN projects p ON p.id = att.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE att.scan_date > ? AND att.scan_date <= ? AND att.session = 'AM'
+                  AND e.active = 1 {scope_filters_att}
+                GROUP BY att.scan_date ORDER BY att.scan_date''',
+            [window_start, window_end] + scope_p_att)
+        rates = [(r['c'] / total_emp) * 100 for r in rows] if rows else []
+        avg_rate = sum(rates) / len(rates) if rates else 0
+        # True positive: average rate stayed at or below threshold (i.e. didn't recover).
+        tp = bool(rates) and avg_rate <= threshold + 2
+        return ('true_positive' if tp else 'false_positive', avg_rate,
+                f'Mean AM rate after signal: {avg_rate:.1f}% (baseline {baseline:.1f}%, threshold {threshold:.1f}%)')
+
+    if metric == 'unsafe_obs_count_7d':
+        # True positive if trailing 7d unsafe count rose above baseline at any point during horizon.
+        rows = db_fetchall(conn,
+            f'''SELECT o.observation_date as d, COUNT(*) as c
+                FROM observations o
+                WHERE o.observation_date > ? AND o.observation_date <= ?
+                  AND o.observation_group NOT IN ('Safe Act','Safe Condition')
+                  {scope_filters_obs}
+                GROUP BY o.observation_date ORDER BY o.observation_date''',
+            [window_start, window_end] + scope_p_obs)
+        daily = {r['d']: r['c'] for r in rows}
+        cur = date.fromisoformat(window_start) + timedelta(days=1)
+        end = close_date
+        rolling = []
+        peak = 0
+        while cur <= end:
+            window7 = sum(daily.get((cur - timedelta(days=i)).isoformat(), 0) for i in range(7))
+            rolling.append(window7)
+            peak = max(peak, window7)
+            cur += timedelta(days=1)
+        tp = peak > threshold
+        return ('true_positive' if tp else 'false_positive', float(peak),
+                f'Peak rolling-7d unsafe count after signal: {peak} (baseline {baseline:.0f})')
+
+    if metric == 'medical_overdue_count':
+        # True positive if total overdue count grew above threshold by the close date.
+        overdue_now = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM employees e
+                LEFT JOIN projects p ON p.id = e.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE e.active = 1 AND e.next_medical_due IS NOT NULL
+                  AND e.next_medical_due != '' AND e.next_medical_due < ?
+                  {scope_filters_emp}''', [close_iso] + scope_p_emp)['c']
+        tp = overdue_now >= threshold
+        return ('true_positive' if tp else 'false_positive', float(overdue_now),
+                f'Overdue count at close: {overdue_now} (baseline {baseline:.0f}, threshold {threshold:.0f})')
+
+    if metric == 'twl_high_share':
+        scope_twl = ''
+        scope_p_twl = []
+        if area_id:
+            scope_twl = ' AND t.area_id = ?'; scope_p_twl = [area_id]
+        elif div_id:
+            scope_twl = ' AND t.area_id IN (SELECT a.id FROM areas a WHERE a.division_id = ?)'; scope_p_twl = [div_id]
+        total = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM twl_readings t
+                WHERE t.reading_date > ? AND t.reading_date <= ? {scope_twl}''',
+            [window_start, window_end] + scope_p_twl)['c'] or 1
+        high = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM twl_readings t
+                WHERE t.reading_date > ? AND t.reading_date <= ? AND t.risk_zone = 'high' {scope_twl}''',
+            [window_start, window_end] + scope_p_twl)['c']
+        share = (high / total) * 100 if total else 0
+        # True positive if high share remained > threshold OR a heat-related obs was recorded.
+        heat_obs = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM observations o
+                WHERE o.observation_date > ? AND o.observation_date <= ?
+                  AND (LOWER(o.observation_text) LIKE '%heat%'
+                       OR LOWER(o.observation_text) LIKE '%dehydrat%'
+                       OR LOWER(o.observation_text) LIKE '%fatigue%') {scope_filters_obs}''',
+            [window_start, window_end] + scope_p_obs)['c']
+        tp = share > threshold or heat_obs > 0
+        return ('true_positive' if tp else 'false_positive', float(share),
+                f'High-TWL share after signal: {share:.0f}%; heat-related obs: {heat_obs}')
+
+    if metric == 'compound_heat_occupancy':
+        # True positive if the heat+occupancy condition reoccurred any day during the horizon.
+        scope_twl = ''
+        scope_p_twl = []
+        if area_id:
+            scope_twl = ' AND t.area_id = ?'; scope_p_twl = [area_id]
+        elif div_id:
+            scope_twl = ' AND t.area_id IN (SELECT a.id FROM areas a WHERE a.division_id = ?)'; scope_p_twl = [div_id]
+        total_emp = db_fetchone(conn,
+            f'''SELECT COUNT(*) as c FROM employees e
+                LEFT JOIN projects p ON p.id = e.project_id
+                LEFT JOIN areas ar ON ar.id = p.area_id
+                WHERE e.active = 1 {scope_filters_emp}''', scope_p_emp)['c'] or 1
+        scope_filters_att = ''
+        scope_p_att = []
+        if proj_id:
+            scope_filters_att = ' AND att.project_id = ?'; scope_p_att = [proj_id]
+        elif area_id:
+            scope_filters_att = ' AND p.area_id = ?'; scope_p_att = [area_id]
+        elif div_id:
+            scope_filters_att = ' AND ar.division_id = ?'; scope_p_att = [div_id]
+        cur = date.fromisoformat(window_start) + timedelta(days=1)
+        hits = 0
+        while cur <= close_date:
+            ds = cur.isoformat()
+            twl_high_today = db_fetchone(conn,
+                f'''SELECT COUNT(*) as c FROM twl_readings t
+                    WHERE t.reading_date = ? AND t.risk_zone = 'high' {scope_twl}''',
+                [ds] + scope_p_twl)['c']
+            if twl_high_today > 0:
+                am_today = db_fetchone(conn,
+                    f'''SELECT COUNT(DISTINCT att.employee_no) as c
+                        FROM attendance att
+                        JOIN employees e ON e.employee_no = att.employee_no AND e.project_id = att.project_id
+                        LEFT JOIN projects p ON p.id = att.project_id
+                        LEFT JOIN areas ar ON ar.id = p.area_id
+                        WHERE att.scan_date = ? AND att.session = 'AM' AND e.active = 1
+                          {scope_filters_att}''',
+                    [ds] + scope_p_att)['c']
+                if am_today > total_emp * 0.65:
+                    hits += 1
+            cur += timedelta(days=1)
+        tp = hits > 0
+        return ('true_positive' if tp else 'false_positive', float(hits),
+                f'Compound heat+occupancy days during horizon: {hits}')
+
+    return ('false_positive', None, 'Unknown metric — defaulted to false positive')
+
+
+def _domain_hit_rate(conn, lookback_days=90, division_id=None, area_id=None, project_id=None):
+    """Rolling hit rate per domain over the last `lookback_days` evaluated signals."""
+    since = (date.today() - timedelta(days=int(lookback_days))).isoformat()
+    where = "WHERE evaluated_at IS NOT NULL AND verdict IS NOT NULL AND as_of_date >= ?"
+    params = [since]
+    if project_id:
+        where += " AND scope_project_id = ?"; params.append(project_id)
+    elif area_id:
+        where += " AND scope_area_id = ?"; params.append(area_id)
+    elif division_id:
+        where += " AND scope_division_id = ?"; params.append(division_id)
+    rows = db_fetchall(conn,
+        f"""SELECT domain,
+                   SUM(CASE WHEN verdict = 'true_positive' THEN 1 ELSE 0 END) as tp,
+                   SUM(CASE WHEN verdict = 'false_positive' THEN 1 ELSE 0 END) as fp,
+                   COUNT(*) as total
+            FROM engine_signals {where}
+            GROUP BY domain""", params)
+    out = {}
+    for r in rows:
+        d = r['domain']
+        total = r['total'] or 0
+        tp = r['tp'] or 0
+        out[d] = {
+            'evaluated': total,
+            'hits': tp,
+            'misses': r['fp'] or 0,
+            'hit_rate': (tp / total) if total > 0 else 0.0,
+        }
+    return out
+
+
+@app.route('/api/risk-engine/backtest')
+@require_auth
+def api_risk_engine_backtest():
+    """Backtest summary for the Risk Engine: hit rates, calibration, signal feed."""
+    lookback = max(7, min(730, request.args.get('days', default=90, type=int)))
+    division_id = request.args.get('division_id', type=int)
+    area_id = request.args.get('area_id', type=int)
+    project_id = request.args.get('project_id', type=int)
+    since = (date.today() - timedelta(days=lookback)).isoformat()
+
+    conn = get_db()
+    try:
+        _evaluate_pending_signals(conn, date.today().isoformat())
+
+        where = "WHERE as_of_date >= ?"
+        params = [since]
+        if project_id:
+            where += " AND scope_project_id = ?"; params.append(project_id)
+        elif area_id:
+            where += " AND scope_area_id = ?"; params.append(area_id)
+        elif division_id:
+            where += " AND scope_division_id = ?"; params.append(division_id)
+
+        feed = db_fetchall(conn,
+            f"""SELECT id, emitted_at, as_of_date, domain, severity, title, detail,
+                       horizon_days, confidence, predicted_metric, predicted_threshold,
+                       predicted_direction, baseline_value, evaluated_at, observed_value,
+                       verdict, outcome_summary
+                FROM engine_signals {where}
+                ORDER BY as_of_date DESC, id DESC LIMIT 500""", params)
+
+        # Per-domain rollup
+        domains_summary = _domain_hit_rate(conn, lookback_days=lookback,
+                                           division_id=division_id, area_id=area_id,
+                                           project_id=project_id)
+
+        # Calibration buckets (10% confidence bins)
+        cal_rows = db_fetchall(conn,
+            f"""SELECT confidence, verdict FROM engine_signals {where}
+                AND evaluated_at IS NOT NULL AND verdict IS NOT NULL""", params)
+        bins = [{'lo': i/10, 'hi': (i+1)/10, 'n': 0, 'tp': 0} for i in range(10)]
+        for r in cal_rows:
+            c = r['confidence'] or 0
+            idx = min(9, max(0, int(c * 10)))
+            bins[idx]['n'] += 1
+            if r['verdict'] == 'true_positive':
+                bins[idx]['tp'] += 1
+        calibration = [{'lo': b['lo'], 'hi': b['hi'], 'n': b['n'],
+                        'observed': (b['tp'] / b['n']) if b['n'] else None,
+                        'expected': (b['lo'] + b['hi']) / 2} for b in bins]
+
+        # Severity confusion matrix
+        conf_rows = db_fetchall(conn,
+            f"""SELECT severity,
+                       SUM(CASE WHEN verdict = 'true_positive' THEN 1 ELSE 0 END) as tp,
+                       SUM(CASE WHEN verdict = 'false_positive' THEN 1 ELSE 0 END) as fp,
+                       SUM(CASE WHEN verdict IS NULL THEN 1 ELSE 0 END) as pending,
+                       COUNT(*) as total
+                FROM engine_signals {where}
+                GROUP BY severity""", params)
+        confusion = {r['severity']: {'tp': r['tp'] or 0, 'fp': r['fp'] or 0,
+                                     'pending': r['pending'] or 0, 'total': r['total'] or 0}
+                     for r in conf_rows}
+
+        total_evaluated = sum(d['evaluated'] for d in domains_summary.values())
+        total_hits = sum(d['hits'] for d in domains_summary.values())
+        overall_hit_rate = (total_hits / total_evaluated) if total_evaluated else 0.0
+    finally:
+        conn.close()
+
+    return jsonify({
+        'lookback_days': lookback,
+        'total_signals': len(feed),
+        'total_evaluated': total_evaluated,
+        'overall_hit_rate': overall_hit_rate,
+        'domains': domains_summary,
+        'calibration_bins': calibration,
+        'severity_confusion': confusion,
+        'feed': feed,
+    })
+
+
 @app.route('/api/risk-engine')
 @require_auth
 def api_risk_engine():
@@ -3474,11 +3912,16 @@ def api_risk_engine():
         if att_slope < -0.25 and len(rates) >= 7:
             predictive_signals.append({
                 'type': 'predictive',
+                'domain': 'attendance',
                 'severity': 'medium',
                 'title': 'Attendance momentum declining',
                 'detail': f'14-day trend suggests falling scan-in rates (~{att_decline_pp:.1f} pp drop vs period start). Early signal of engagement or logistics issues.',
                 'horizon_days': 14,
                 'confidence': min(0.9, 0.45 + min(0.4, abs(att_slope) * 0.15)),
+                'predicted_metric': 'am_attendance_rate',
+                'predicted_threshold': float(last3),
+                'predicted_direction': 'down',
+                'baseline_value': float(last3),
             })
             preventive_recommendations.append({
                 'priority': 2,
@@ -3502,11 +3945,16 @@ def api_risk_engine():
         if due_30 > 50:
             predictive_signals.append({
                 'type': 'preventive',
+                'domain': 'health',
                 'severity': 'low',
                 'title': 'Medical renewal wave approaching',
                 'detail': f'{due_30} workers have medical due in the next 30 days — capacity planning now avoids compliance spikes.',
                 'horizon_days': 30,
                 'confidence': 0.85,
+                'predicted_metric': 'medical_overdue_count',
+                'predicted_threshold': float(overdue + max(1, due_30 * 0.4)),
+                'predicted_direction': 'up',
+                'baseline_value': float(overdue),
             })
             preventive_recommendations.append({
                 'priority': 3,
@@ -3570,11 +4018,16 @@ def api_risk_engine():
                 days_to_double = int(max(3, min(21, (avg_tail / max(0.01, unsafe_slope))))) if avg_tail else None
             predictive_signals.append({
                 'type': 'predictive',
+                'domain': 'safety',
                 'severity': 'high' if unsafe_slope > 0.25 else 'medium',
                 'title': 'Unsafe observation rate trending up',
                 'detail': f'14-day slope indicates increasing unsafe/near-miss volume (week-over-week {(unsafe_accel*100):.0f}% change). Early intervention reduces incident probability.',
                 'horizon_days': days_to_double or 14,
                 'confidence': min(0.88, 0.5 + min(0.35, unsafe_slope * 0.8)),
+                'predicted_metric': 'unsafe_obs_count_7d',
+                'predicted_threshold': float(w2_unsafe),
+                'predicted_direction': 'up',
+                'baseline_value': float(w2_unsafe),
             })
             preventive_recommendations.append({
                 'priority': 1,
@@ -3612,11 +4065,16 @@ def api_risk_engine():
         if twl_high_pct > 15 and twl_total >= 5:
             predictive_signals.append({
                 'type': 'predictive',
+                'domain': 'environmental',
                 'severity': 'high',
                 'title': 'Thermal stress exposure elevated',
                 'detail': 'Share of high-risk TWL readings suggests heat strain risk for outdoor/heavy work — expect fatigue-related errors if unmitigated.',
                 'horizon_days': 3,
                 'confidence': 0.72,
+                'predicted_metric': 'twl_high_share',
+                'predicted_threshold': 15.0,
+                'predicted_direction': 'breach',
+                'baseline_value': float(twl_high_pct),
             })
             preventive_recommendations.append({
                 'priority': 2,
@@ -3637,11 +4095,16 @@ def api_risk_engine():
             cross_score = min(10, 6 + twl_high_c)
             predictive_signals.append({
                 'type': 'predictive',
+                'domain': 'cross_cutting',
                 'severity': 'critical',
                 'title': 'Compound risk: heat + high site occupancy',
                 'detail': f'{am_today} workers on site while TWL readings include high-risk zones — elevated heat illness and human error risk.',
                 'horizon_days': 1,
                 'confidence': 0.78,
+                'predicted_metric': 'compound_heat_occupancy',
+                'predicted_threshold': 1.0,
+                'predicted_direction': 'breach',
+                'baseline_value': float(am_today),
             })
             preventive_recommendations.append({
                 'priority': 1,
@@ -3656,6 +4119,28 @@ def api_risk_engine():
 
         preventive_recommendations.sort(key=lambda x: x['priority'])
 
+        # Persist new predictive signals so we can backtest them later (idempotent on signature).
+        _persist_engine_signals(conn, predictive_signals, target_date,
+                                division_id, area_id, project_id)
+
+        # Lazy-evaluate any past signals whose horizon has now closed.
+        _evaluate_pending_signals(conn, target_date)
+
+        # Compute rolling 90d hit-rate per domain and use it to calibrate displayed confidence.
+        domain_hit_rate = _domain_hit_rate(conn, lookback_days=90)
+        for s in predictive_signals:
+            raw = s.get('confidence')
+            dom = s.get('domain')
+            if raw is not None and dom in domain_hit_rate and domain_hit_rate[dom]['evaluated'] >= 3:
+                cal = domain_hit_rate[dom]['hit_rate']
+                s['confidence_raw'] = raw
+                s['confidence'] = max(0.05, min(0.99, raw * (0.4 + 0.6 * cal)))
+                s['confidence_calibration'] = {
+                    'evaluated_signals': domain_hit_rate[dom]['evaluated'],
+                    'hits': domain_hit_rate[dom]['hits'],
+                    'hit_rate': cal,
+                }
+
         severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
         predictive_signals.sort(key=lambda s: severity_order.get(s.get('severity', 'low'), 9))
 
@@ -3669,6 +4154,7 @@ def api_risk_engine():
         'domains': domains,
         'predictive_signals': predictive_signals,
         'preventive_recommendations': preventive_recommendations,
+        'domain_hit_rate': domain_hit_rate,
         'methodology': 'Rule-based leading indicators + 14d linear trends on attendance and unsafe observations; not a certified ML model.',
     })
 

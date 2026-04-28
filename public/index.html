@@ -29,10 +29,10 @@
                 <button id="login-mode-admin" class="btn login-mode-btn" style="flex:1;border-radius:0;border:none;border-left:1px solid var(--border)">Admin / Manager</button>
             </div>
 
-            <!-- Scanner login: username + PIN -->
+            <!-- Scanner login: username + PIN + Division/Area/Project -->
             <div id="login-scanner-fields">
                 <h2>Scanner Sign In</h2>
-                <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.9rem">Enter your username and PIN provided by admin</p>
+                <p style="color:var(--text-dim);margin-bottom:12px;font-size:0.9rem">Enter your username and PIN, then select Division, Area and Project.</p>
                 <div class="form-group">
                     <label>Username</label>
                     <input type="text" id="login-username" class="input" placeholder="Enter username" autocomplete="username" autocapitalize="off">
@@ -40,6 +40,18 @@
                 <div class="form-group">
                     <label>PIN</label>
                     <input type="password" id="login-pin" class="input" placeholder="Enter PIN" inputmode="numeric" pattern="[0-9]*" maxlength="8">
+                </div>
+                <div class="form-group">
+                    <label>Division</label>
+                    <select id="login-division" class="input"><option value="">-- Select Division --</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Area</label>
+                    <select id="login-area" class="input" disabled><option value="">Select division first</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Project</label>
+                    <select id="login-project" class="input" disabled><option value="">Select area first</option></select>
                 </div>
             </div>
 
