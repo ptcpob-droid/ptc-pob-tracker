@@ -838,7 +838,15 @@ function buildSliderDates(mode) {
     const dates = [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    if (mode === 'week') {
+    if (mode === 'month') {
+        // 24 months back; each entry = last day of that month, capped at today
+        for (let i = 23; i >= 0; i--) {
+            const monthAnchor = new Date(today.getFullYear(), today.getMonth() - i, 1);
+            const lastDayOfMonth = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth() + 1, 0);
+            const use = lastDayOfMonth > today ? today : lastDayOfMonth;
+            dates.push(use.toISOString().split('T')[0]);
+        }
+    } else if (mode === 'week') {
         for (let i = 12; i >= 0; i--) {
             const d = new Date(today);
             d.setDate(d.getDate() - i * 7);
@@ -863,6 +871,9 @@ function getSliderDate() {
 function formatSliderLabel(dateStr, mode) {
     const d = new Date(dateStr + 'T00:00:00');
     const opts = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+    if (mode === 'month') {
+        return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    }
     if (mode === 'week') {
         const end = new Date(d);
         end.setDate(end.getDate() + 6);
@@ -986,56 +997,409 @@ function initDateSlider() {
     rebuildSlider();
 }
 
+// ===========================================================
+// Dashboard Filter Shell — drag-drop palette + active chips + popover
+// ===========================================================
+
+const FILTER_CATEGORIES = [
+    { key: 'division',          label: 'Division',          source: 'divisions',     valueField: 'id',  labelField: 'name' },
+    { key: 'area',              label: 'Area',              source: 'areas',         valueField: 'id',  labelField: 'name' },
+    { key: 'project',           label: 'Project',           source: 'projects',      valueField: 'id',  labelField: 'name' },
+    { key: 'subcontractor',     label: 'Contractor',        source: 'contractors',   simple: true },
+    { key: 'camp',              label: 'Camp',              source: 'camps',         simple: true },
+    { key: 'fieldglass_status', label: 'Fieldglass Status', source: 'fieldglass',    simple: true },
+    { key: 'discipline',        label: 'Discipline',        source: 'disciplines',   simple: true },
+    { key: 'nationality',       label: 'Nationality',       source: 'nationalities', simple: true },
+    { key: 'age',               label: 'Age Range',         range: true },
+    { key: 'chronic',           label: 'Chronic Condition', source: 'chronic',       simple: true, hasAny: true },
+];
+
+// Multi-value filter state. age is special: { from, to }.
+let _filterState = {};
+let _filterOptions = null; // cached payload from /api/filter-options
+let _filterDebounce = null;
+let _activePopoverCat = null;
+
+function _emptyFilterValue(cat) {
+    return cat.range ? null : [];
+}
+
+function _filterChipIcon(catKey) {
+    const map = {
+        division: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+        area: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21 3 6"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>',
+        project: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h6l2 3h10v10H3z"/></svg>',
+        subcontractor: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="17" cy="7" r="3"/></svg>',
+        twl_zone: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14V4a2 2 0 1 0-4 0v10a4 4 0 1 0 4 0z"/></svg>',
+        camp: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18L12 4 3 21z"/></svg>',
+        fieldglass_status: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>',
+        discipline: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.7-3.7a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.7 3.7z"/></svg>',
+        nationality: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>',
+        age: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+        chronic: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 1 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
+    };
+    return map[catKey] || '';
+}
+
+function _renderPalette() {
+    const palette = $('#filter-palette-chips');
+    if (!palette) return;
+    palette.innerHTML = FILTER_CATEGORIES.map(cat => {
+        const isActive = _filterState[cat.key] !== undefined;
+        return `<button class="fchip ${isActive ? 'disabled' : ''}" draggable="${isActive ? 'false' : 'true'}" data-cat="${cat.key}" type="button" title="${esc(cat.label)}">
+            <span class="fchip-icon">${_filterChipIcon(cat.key)}</span>
+            <span>${esc(cat.label)}</span>
+        </button>`;
+    }).join('');
+    palette.querySelectorAll('.fchip').forEach(chip => {
+        chip.addEventListener('dragstart', e => {
+            chip.classList.add('dragging');
+            e.dataTransfer.setData('text/plain', chip.dataset.cat);
+            e.dataTransfer.effectAllowed = 'copy';
+        });
+        chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+        chip.addEventListener('click', () => _addFilterCategory(chip.dataset.cat, chip));
+    });
+}
+
+function _renderActiveChips() {
+    const zone = $('#filter-active-chips');
+    const dropzone = $('#filter-dropzone');
+    const badge = $('#filter-count-badge');
+    if (!zone || !dropzone) return;
+
+    const activeKeys = Object.keys(_filterState);
+    if (activeKeys.length === 0) {
+        zone.innerHTML = '';
+        dropzone.classList.remove('has-chips');
+        if (badge) badge.style.display = 'none';
+        _renderPalette();
+        return;
+    }
+
+    dropzone.classList.add('has-chips');
+    if (badge) { badge.style.display = ''; badge.textContent = String(activeKeys.length); }
+
+    zone.innerHTML = activeKeys.map(key => {
+        const cat = FILTER_CATEGORIES.find(c => c.key === key);
+        if (!cat) return '';
+        const valStr = _formatActiveValue(cat, _filterState[key]);
+        const placeholder = !valStr;
+        return `<div class="fchip-active" data-cat="${cat.key}" draggable="true">
+            <span class="fchip-active-cat">${esc(cat.label)}</span>
+            <span class="fchip-active-sep">›</span>
+            <span class="fchip-active-vals ${placeholder ? 'placeholder' : ''}">${esc(valStr || 'select…')}</span>
+            <button class="fchip-active-edit" type="button" title="Edit values" data-action="edit">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+            </button>
+            <button class="fchip-active-remove" type="button" title="Remove" data-action="remove">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>`;
+    }).join('');
+
+    zone.querySelectorAll('.fchip-active').forEach(chip => {
+        const cat = chip.dataset.cat;
+        chip.querySelector('[data-action="remove"]').addEventListener('click', e => {
+            e.stopPropagation();
+            _removeFilterCategory(cat);
+        });
+        chip.querySelector('[data-action="edit"]').addEventListener('click', e => {
+            e.stopPropagation();
+            _openPopover(cat, chip);
+        });
+        chip.querySelector('.fchip-active-vals').addEventListener('click', () => _openPopover(cat, chip));
+        chip.addEventListener('dragstart', e => {
+            chip.classList.add('dragging');
+            e.dataTransfer.setData('text/plain', `__active:${cat}`);
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+    });
+
+    _renderPalette();
+}
+
+function _formatActiveValue(cat, val) {
+    if (cat.range) {
+        if (!val) return '';
+        const f = (val.from !== '' && val.from != null) ? val.from : '';
+        const t = (val.to   !== '' && val.to   != null) ? val.to   : '';
+        if (!f && !t) return '';
+        if (f && t) return `${f} – ${t}`;
+        if (f) return `≥ ${f}`;
+        return `≤ ${t}`;
+    }
+    if (!Array.isArray(val) || val.length === 0) return '';
+    const labels = val.map(v => v.label);
+    if (labels.length <= 2) return labels.join(', ');
+    return `${labels[0]}, ${labels[1]} +${labels.length - 2}`;
+}
+
+function _addFilterCategory(catKey, anchorEl) {
+    if (_filterState[catKey] !== undefined) return;
+    const cat = FILTER_CATEGORIES.find(c => c.key === catKey);
+    if (!cat) return;
+    _filterState[catKey] = _emptyFilterValue(cat);
+    _renderActiveChips();
+    requestAnimationFrame(() => {
+        const newChip = document.querySelector(`.fchip-active[data-cat="${catKey}"]`);
+        if (newChip) _openPopover(catKey, newChip);
+    });
+}
+
+function _removeFilterCategory(catKey) {
+    delete _filterState[catKey];
+    _closePopover();
+    _renderActiveChips();
+    _scheduleDashboardRefresh();
+}
+
+function _scheduleDashboardRefresh() {
+    if (_filterDebounce) clearTimeout(_filterDebounce);
+    _filterDebounce = setTimeout(() => {
+        if (typeof refreshDashboard === 'function') refreshDashboard();
+    }, 220);
+}
+
+// ----- Popover -----
+
+function _openPopover(catKey, anchorEl) {
+    const cat = FILTER_CATEGORIES.find(c => c.key === catKey);
+    if (!cat) return;
+    const popover = $('#filter-popover');
+    const title = $('#filter-popover-title');
+    const body = $('#filter-popover-body');
+    const search = $('#filter-popover-search');
+    if (!popover || !body) return;
+
+    _activePopoverCat = catKey;
+    title.textContent = cat.label;
+
+    // Position popover under the anchor chip
+    const shell = $('#filter-shell');
+    const shellRect = shell.getBoundingClientRect();
+    const aRect = anchorEl.getBoundingClientRect();
+    const top = (aRect.bottom - shellRect.top) + 8;
+    const left = Math.min(
+        Math.max(aRect.left - shellRect.left, 8),
+        Math.max(shellRect.width - 320, 8)
+    );
+    popover.style.top = `${top}px`;
+    popover.style.left = `${left}px`;
+    popover.classList.remove('hidden');
+
+    if (cat.range) {
+        search.classList.add('hidden');
+        const cur = _filterState[catKey] || {};
+        const minDef = (_filterOptions && _filterOptions.age_min) || 18;
+        const maxDef = (_filterOptions && _filterOptions.age_max) || 70;
+        body.innerHTML = `<div class="filter-age-range">
+            <div class="filter-age-row">
+                <label for="age-from-input">From</label>
+                <input id="age-from-input" type="number" class="input" min="0" max="120" placeholder="${minDef}" value="${cur.from ?? ''}">
+            </div>
+            <div class="filter-age-row">
+                <label for="age-to-input">To</label>
+                <input id="age-to-input" type="number" class="input" min="0" max="120" placeholder="${maxDef}" value="${cur.to ?? ''}">
+            </div>
+            <div class="filter-age-summary">Workforce range: ${minDef} – ${maxDef}</div>
+        </div>`;
+    } else {
+        search.classList.remove('hidden');
+        search.value = '';
+        _renderPopoverOptions(cat, '');
+        search.oninput = () => _renderPopoverOptions(cat, search.value);
+    }
+}
+
+function _renderPopoverOptions(cat, q) {
+    const body = $('#filter-popover-body');
+    const opts = _getOptionsFor(cat) || [];
+    const cur = _filterState[cat.key] || [];
+    const curIds = new Set(cur.map(v => String(v.id)));
+    const ql = (q || '').trim().toLowerCase();
+    const filtered = ql ? opts.filter(o => String(o.label).toLowerCase().includes(ql)) : opts;
+
+    let html = '';
+    if (cat.hasAny) {
+        const isAny = cur.some(v => String(v.id) === 'any');
+        html += `<label class="filter-popover-opt"><input type="checkbox" data-id="any" ${isAny ? 'checked' : ''}> <span><strong>Any condition</strong> (excludes "none")</span></label>`;
+    }
+    if (!filtered.length) {
+        html += `<div class="filter-popover-opt empty">No options found.</div>`;
+    } else {
+        html += filtered.map(o => {
+            const checked = curIds.has(String(o.id)) ? 'checked' : '';
+            const sub = o.sub ? ` <small style="color:var(--text-mute)">${esc(o.sub)}</small>` : '';
+            return `<label class="filter-popover-opt"><input type="checkbox" data-id="${esc(String(o.id))}" data-label="${esc(o.label)}" ${checked}> <span>${esc(o.label)}${sub}</span></label>`;
+        }).join('');
+    }
+    body.innerHTML = html;
+}
+
+function _getOptionsFor(cat) {
+    if (!_filterOptions || !cat.source) return [];
+    const raw = _filterOptions[cat.source] || [];
+
+    // Cascading filters: when division/area selected, narrow areas/projects.
+    if (cat.key === 'area') {
+        const divSel = (_filterState.division || []).map(v => String(v.id));
+        const out = (_filterOptions.areas || []).filter(a => !divSel.length || divSel.includes(String(a.division_id)));
+        return out.map(a => ({ id: a.id, label: a.name, sub: a.division_name }));
+    }
+    if (cat.key === 'project') {
+        const divSel = (_filterState.division || []).map(v => String(v.id));
+        const areaSel = (_filterState.area || []).map(v => String(v.id));
+        const out = (_filterOptions.projects || []).filter(p =>
+            (!divSel.length  || divSel.includes(String(p.division_id))) &&
+            (!areaSel.length || areaSel.includes(String(p.area_id)))
+        );
+        return out.map(p => ({ id: p.id, label: p.name }));
+    }
+    if (cat.key === 'division') return raw.map(d => ({ id: d.id, label: d.name }));
+    if (cat.key === 'twl_zone') return raw.map(z => ({ id: z.id, label: z.name }));
+    if (cat.simple) return raw.map(v => ({ id: v, label: v }));
+    return [];
+}
+
+function _closePopover() {
+    const popover = $('#filter-popover');
+    if (popover) popover.classList.add('hidden');
+    _activePopoverCat = null;
+}
+
+function _applyPopover() {
+    if (!_activePopoverCat) { _closePopover(); return; }
+    const cat = FILTER_CATEGORIES.find(c => c.key === _activePopoverCat);
+    if (!cat) { _closePopover(); return; }
+
+    if (cat.range) {
+        const f = $('#age-from-input')?.value;
+        const t = $('#age-to-input')?.value;
+        const fv = (f !== '' && f != null) ? parseInt(f, 10) : '';
+        const tv = (t !== '' && t != null) ? parseInt(t, 10) : '';
+        if ((fv === '' || isNaN(fv)) && (tv === '' || isNaN(tv))) {
+            _filterState[cat.key] = null;
+        } else {
+            _filterState[cat.key] = {
+                from: (fv === '' || isNaN(fv)) ? '' : fv,
+                to:   (tv === '' || isNaN(tv)) ? '' : tv,
+            };
+        }
+    } else {
+        const checks = Array.from($$('#filter-popover-body input[type="checkbox"]:checked'));
+        _filterState[cat.key] = checks.map(c => ({ id: c.dataset.id, label: c.dataset.label || c.dataset.id }));
+
+        // Cascade: when division values change, prune area/project selections that no longer match.
+        if (cat.key === 'division') _pruneCascade('division');
+        if (cat.key === 'area')     _pruneCascade('area');
+    }
+
+    _closePopover();
+    _renderActiveChips();
+    _scheduleDashboardRefresh();
+}
+
+function _pruneCascade(changedKey) {
+    if (!_filterOptions) return;
+    if (changedKey === 'division') {
+        const divIds = (_filterState.division || []).map(v => String(v.id));
+        if (divIds.length && _filterState.area) {
+            _filterState.area = _filterState.area.filter(v => {
+                const a = (_filterOptions.areas || []).find(x => String(x.id) === String(v.id));
+                return a && divIds.includes(String(a.division_id));
+            });
+        }
+        if (divIds.length && _filterState.project) {
+            _filterState.project = _filterState.project.filter(v => {
+                const p = (_filterOptions.projects || []).find(x => String(x.id) === String(v.id));
+                return p && divIds.includes(String(p.division_id));
+            });
+        }
+    }
+    if (changedKey === 'area') {
+        const areaIds = (_filterState.area || []).map(v => String(v.id));
+        if (areaIds.length && _filterState.project) {
+            _filterState.project = _filterState.project.filter(v => {
+                const p = (_filterOptions.projects || []).find(x => String(x.id) === String(v.id));
+                return p && areaIds.includes(String(p.area_id));
+            });
+        }
+    }
+}
+
+function _clearPopover() {
+    if (!_activePopoverCat) return;
+    const cat = FILTER_CATEGORIES.find(c => c.key === _activePopoverCat);
+    if (!cat) return;
+    if (cat.range) {
+        const f = $('#age-from-input'); if (f) f.value = '';
+        const t = $('#age-to-input');   if (t) t.value = '';
+    } else {
+        $$('#filter-popover-body input[type="checkbox"]').forEach(c => c.checked = false);
+    }
+}
+
+function _resetAllFilters() {
+    _filterState = {};
+    _closePopover();
+    _renderActiveChips();
+    _scheduleDashboardRefresh();
+}
+
 async function initDashFilters() {
-    const dd = $('#dash-division'), da = $('#dash-area'), dp = $('#dash-project'), dc = $('#dash-contractor');
-
-    const [divs, allAreas] = await Promise.all([api('/divisions'), api('/areas')]);
-    if (Array.isArray(divs)) {
-        dd.innerHTML = '<option value="">All Divisions</option>' + divs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-    }
-    if (Array.isArray(allAreas)) {
-        da.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    // Load distinct values once
+    try {
+        _filterOptions = await api('/filter-options');
+    } catch (e) {
+        _filterOptions = { divisions: [], areas: [], projects: [], contractors: [], camps: [], fieldglass: [], disciplines: [], nationalities: [], chronic: [], twl_zones: [], age_min: 18, age_max: 70 };
     }
 
-    dd.addEventListener('change', async () => {
-        dp.innerHTML = '<option value="">All Projects</option>';
-        if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
-        if (dd.value) {
-            const areas = await api(`/areas?division_id=${dd.value}`);
-            da.innerHTML = '<option value="">All Areas</option>';
-            if (Array.isArray(areas)) da.innerHTML += areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-            const projs = await api(`/projects?division_id=${dd.value}`);
-            if (Array.isArray(projs)) dp.innerHTML = '<option value="">All Projects</option>' + projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-        } else {
-            if (Array.isArray(allAreas)) da.innerHTML = '<option value="">All Areas</option>' + allAreas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-        }
-        await loadContractors();
-        refreshDashboard();
+    _renderPalette();
+    _renderActiveChips();
+
+    // Drop zone events
+    const dropzone = $('#filter-dropzone');
+    if (dropzone) {
+        dropzone.addEventListener('dragover', e => {
+            e.preventDefault();
+            dropzone.classList.add('drag-over');
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        });
+        dropzone.addEventListener('dragleave', e => {
+            if (e.target === dropzone) dropzone.classList.remove('drag-over');
+        });
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('drag-over');
+            const data = e.dataTransfer.getData('text/plain');
+            if (!data || data.startsWith('__active:')) return;
+            const anchor = document.querySelector(`#filter-palette-chips .fchip[data-cat="${data}"]`);
+            _addFilterCategory(data, anchor);
+        });
+    }
+
+    // Popover wiring
+    $('#filter-popover-close')?.addEventListener('click', _closePopover);
+    $('#filter-popover-apply')?.addEventListener('click', _applyPopover);
+    $('#filter-popover-clear')?.addEventListener('click', _clearPopover);
+    $('#filter-reset')?.addEventListener('click', _resetAllFilters);
+
+    // Click-outside dismiss
+    document.addEventListener('mousedown', e => {
+        const popover = $('#filter-popover');
+        if (!popover || popover.classList.contains('hidden')) return;
+        if (popover.contains(e.target)) return;
+        if (e.target.closest('.fchip-active') || e.target.closest('.fchip')) return;
+        _closePopover();
     });
 
-    da.addEventListener('change', async () => {
-        if (dc) dc.innerHTML = '<option value="">All Contractors</option>';
-        if (da.value) {
-            await loadProjects(dp, true, da.value, null);
-        } else if (dd.value) {
-            const projs = await api(`/projects?division_id=${dd.value}`);
-            dp.innerHTML = '<option value="">All Projects</option>';
-            if (Array.isArray(projs)) dp.innerHTML += projs.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-        } else {
-            dp.innerHTML = '<option value="">All Projects</option>';
-        }
-        await loadContractors();
-        refreshDashboard();
+    // Esc dismiss
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') _closePopover();
     });
 
-    dp.addEventListener('change', async () => {
-        await loadContractors();
-        refreshDashboard();
-    });
-
-    if (dc) dc.addEventListener('change', () => refreshDashboard());
-
-    await loadContractors();
     initDateSlider();
 }
 
@@ -1077,29 +1441,33 @@ async function loadDashboard() {
 
 function getDashFilterParams() {
     const parts = [];
-    const div = $('#dash-division')?.value;
-    const area = $('#dash-area')?.value;
-    const proj = $('#dash-project')?.value;
-    const contractor = $('#dash-contractor')?.value;
-    if (proj) parts.push(`project_id=${proj}`);
-    else if (area) parts.push(`area_id=${area}`);
-    else if (div) parts.push(`division_id=${div}`);
-    if (contractor) parts.push(`subcontractor=${encodeURIComponent(contractor)}`);
+    const map = {
+        division: 'division_id',
+        area: 'area_id',
+        project: 'project_id',
+        subcontractor: 'subcontractor',
+        twl_zone: 'twl_zone',
+        camp: 'camp',
+        fieldglass_status: 'fieldglass_status',
+        discipline: 'discipline',
+        nationality: 'nationality',
+        chronic: 'chronic',
+    };
+    Object.keys(map).forEach(key => {
+        const val = _filterState[key];
+        if (!Array.isArray(val) || val.length === 0) return;
+        const csv = val.map(v => v.id).join(',');
+        parts.push(`${map[key]}=${encodeURIComponent(csv)}`);
+    });
+    if (_filterState.age && (_filterState.age.from !== '' || _filterState.age.to !== '')) {
+        if (_filterState.age.from !== '' && _filterState.age.from != null) parts.push(`age_from=${_filterState.age.from}`);
+        if (_filterState.age.to   !== '' && _filterState.age.to   != null) parts.push(`age_to=${_filterState.age.to}`);
+    }
     return parts.join('&');
 }
 
-async function loadContractors() {
-    const dc = $('#dash-contractor');
-    if (!dc) return;
-    const params = getDashFilterParams();
-    const data = await api('/contractors' + (params ? '?' + params : ''));
-    const cur = dc.value;
-    dc.innerHTML = '<option value="">All Contractors</option>';
-    if (Array.isArray(data)) {
-        dc.innerHTML += data.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
-    }
-    dc.value = cur;
-}
+// Legacy no-op (the new filter shell handles contractor selection via /api/filter-options).
+async function loadContractors() { return; }
 
 function getWorkforceFilterParams() {
     const parts = [];
@@ -1199,7 +1567,7 @@ async function loadDashQRCodes() {
         <div class="qr-id">${esc(e.employee_no)}</div>
         <div class="qr-role">${esc(e.designation || '')}${e.designation && e.discipline ? ' | ' : ''}${esc(e.discipline || '')}</div>
         ${e.project_name ? `<div class="qr-project">${esc(e.project_name)}</div>` : ''}
-        <div class="qr-handout">Digital HSE — present at site</div>
+        <div class="qr-handout">Digital HSE & Welfare — present at site</div>
         </div>`).join('');
 }
 
@@ -1280,7 +1648,7 @@ async function loadDashAttendanceChart() {
     const params = new URLSearchParams();
     if (filterParams) filterParams.split('&').forEach(p => { const [k, v] = p.split('='); params.set(k, v); });
     const mode = $('#dash-slider-mode')?.value || 'day';
-    params.set('days', mode === 'week' ? '13' : '7');
+    params.set('days', mode === 'month' ? '30' : mode === 'week' ? '13' : '7');
     params.set('session', _sliderSession === 'PM' ? 'EV' : 'AM');
     const data = await api('/trends?' + params.toString());
     if (!data || !data.labels) return;
@@ -2058,9 +2426,9 @@ function drawLineChart(canvas, labels, values, total) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    if (!values.length) { ctx.fillStyle = '#94a3b8'; ctx.font = '14px Inter, sans-serif'; ctx.fillText('No data', w/2 - 25, h/2); return; }
+    if (!values.length) { ctx.fillStyle = '#8b8aa6'; ctx.font = '14px Inter, sans-serif'; ctx.fillText('No data', w/2 - 25, h/2); return; }
 
-    const pad = { top: 30, right: 20, bottom: 40, left: 50 };
+    const pad = { top: 30, right: 20, bottom: 48, left: 50 };
     const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom;
     const maxV = Math.max(...values, total || 1, 1);
 
@@ -2109,14 +2477,23 @@ function drawLineChart(canvas, labels, values, total) {
         ctx.fillStyle = '#22c55e'; ctx.fill();
     });
 
-    // X labels (show ~7 evenly spaced)
-    ctx.fillStyle = '#94a3b8'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+    // X labels — day number on top, month name as one word right below (less congestion)
+    ctx.textAlign = 'center';
     const step = Math.max(1, Math.floor(labels.length / 7));
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     labels.forEach((l, i) => {
         if (i % step === 0 || i === labels.length - 1) {
             const x = pad.left + i * stepX;
             const parts = l.split('-');
-            ctx.fillText(`${parts[2]}/${parts[1]}`, x, h - pad.bottom + 16);
+            const day = parts[2] ? parseInt(parts[2], 10) : 0;
+            const monthIdx = parts[1] ? parseInt(parts[1], 10) - 1 : 0;
+            const monthName = MONTHS[Math.max(0, Math.min(11, monthIdx))] || '';
+            ctx.fillStyle = '#cbcbe0';
+            ctx.font = '600 11px Inter, sans-serif';
+            ctx.fillText(String(day), x, h - pad.bottom + 14);
+            ctx.fillStyle = '#8b8aa6';
+            ctx.font = '10px Inter, sans-serif';
+            ctx.fillText(monthName, x, h - pad.bottom + 28);
         }
     });
 }

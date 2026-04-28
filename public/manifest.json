@@ -1,7 +1,7 @@
 {
-    "name": "Digital HSE Headcount & Worker Health Awareness",
-    "short_name": "Digital HSE",
-    "description": "Digital HSE headcount tracking and worker health awareness with QR code scanning",
+    "name": "Digital HSE & Welfare — Headcount, Worker Health Awareness and Analytics",
+    "short_name": "Digital HSE & Welfare",
+    "description": "Digital HSE & Welfare: headcount, worker health awareness, and analytics with QR code scanning",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#0f172a",

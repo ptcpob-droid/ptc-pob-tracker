@@ -1182,6 +1182,120 @@ def apply_project_filter(conn, query, params, user, table_alias='a'):
     return query, params
 
 
+def _split_csv(val):
+    """Split a comma-separated query string into a clean list of trimmed non-empty values."""
+    if not val:
+        return []
+    return [v.strip() for v in str(val).split(',') if v.strip()]
+
+
+def _twl_zone_area_ids(conn, zones, scan_date=None):
+    """Return list of area_ids whose latest TWL reading (on or before scan_date) falls in any of the zones.
+    Zones: low (>=140), medium (115..140), high (<115)."""
+    if not zones:
+        return None
+    z = {z.lower() for z in zones}
+    where_date = ''
+    p = []
+    if scan_date:
+        where_date = ' AND r.reading_date <= ?'
+        p.append(scan_date)
+    rows = db_fetchall(conn, f'''
+        SELECT r.area_id, r.twl_value
+        FROM twl_readings r
+        JOIN (
+            SELECT area_id, MAX(reading_date || ' ' || COALESCE(reading_time,'00:00')) AS latest
+            FROM twl_readings
+            WHERE 1=1 {where_date}
+            GROUP BY area_id
+        ) lr ON lr.area_id = r.area_id AND (r.reading_date || ' ' || COALESCE(r.reading_time,'00:00')) = lr.latest
+    ''', tuple(p))
+    out = []
+    for r in rows:
+        v = r['twl_value']
+        if v is None:
+            continue
+        if 'high' in z and v < 115:
+            out.append(r['area_id']); continue
+        if 'medium' in z and 115 <= v < 140:
+            out.append(r['area_id']); continue
+        if 'low' in z and v >= 140:
+            out.append(r['area_id']); continue
+    return out
+
+
+def apply_dashboard_filters(conn, query, params, args, e_alias='e', p_alias='p', a_alias='ar', att_alias=None):
+    """Apply the dashboard filter shell parameters to a query.
+    Assumes the query already joins employees as e_alias, projects as p_alias, areas as a_alias when those columns are referenced.
+    Multi-value params are comma-separated (e.g. discipline=Mechanical,Electrical).
+    Supported keys: division_id, area_id, project_id, subcontractor (contractor name), camp, fieldglass_status,
+                    discipline, nationality, chronic, age_from, age_to, twl_zone.
+    """
+    if hasattr(args, 'get'):
+        getter = args.get
+    else:
+        getter = lambda k, d=None: args.get(k, d) if isinstance(args, dict) else d
+
+    def in_clause(col, values):
+        nonlocal query, params
+        if not values:
+            return
+        ph = ','.join(['?'] * len(values))
+        query += f' AND {col} IN ({ph})'
+        params.extend(values)
+
+    in_clause(f'{p_alias}.area_id', [int(v) for v in _split_csv(getter('area_id')) if v.isdigit()]) if _split_csv(getter('area_id')) else None
+    in_clause(f'{a_alias}.division_id', [int(v) for v in _split_csv(getter('division_id')) if v.isdigit()]) if _split_csv(getter('division_id')) else None
+    project_ids = [int(v) for v in _split_csv(getter('project_id')) if v.isdigit()]
+    if project_ids:
+        target = f'{att_alias}.project_id' if att_alias else f'{e_alias}.project_id'
+        in_clause(target, project_ids)
+    subs = _split_csv(getter('subcontractor'))
+    if subs:
+        ph = ','.join(['?'] * len(subs))
+        query += f' AND ({e_alias}.subcontractor IN ({ph}) OR {e_alias}.contractor IN ({ph}))'
+        params.extend(subs); params.extend(subs)
+    in_clause(f'{e_alias}.camp_name', _split_csv(getter('camp')))
+    in_clause(f'{e_alias}.fieldglass_status', _split_csv(getter('fieldglass_status')))
+    in_clause(f'{e_alias}.discipline', _split_csv(getter('discipline')))
+    in_clause(f'{e_alias}.nationality', _split_csv(getter('nationality')))
+    chronic_vals = _split_csv(getter('chronic'))
+    if chronic_vals:
+        if any(v.lower() == 'any' for v in chronic_vals):
+            query += f" AND {e_alias}.chronic_condition IS NOT NULL AND TRIM({e_alias}.chronic_condition) != '' AND LOWER(TRIM({e_alias}.chronic_condition)) NOT IN ('none','no','nil','n/a')"
+        else:
+            ph = ','.join(['?'] * len(chronic_vals))
+            query += f' AND {e_alias}.chronic_condition IN ({ph})'
+            params.extend(chronic_vals)
+    age_from = getter('age_from')
+    age_to = getter('age_to')
+    if age_from:
+        try:
+            af = int(age_from)
+            query += f" AND CAST(NULLIF({e_alias}.age,'') AS INTEGER) >= ?"
+            params.append(af)
+        except (ValueError, TypeError):
+            pass
+    if age_to:
+        try:
+            at = int(age_to)
+            query += f" AND CAST(NULLIF({e_alias}.age,'') AS INTEGER) <= ?"
+            params.append(at)
+        except (ValueError, TypeError):
+            pass
+    twl_zones = _split_csv(getter('twl_zone'))
+    if twl_zones:
+        scan_date = getter('date') or getter('scan_date')
+        zone_areas = _twl_zone_area_ids(conn, twl_zones, scan_date)
+        if not zone_areas:
+            query += f' AND {p_alias}.area_id = -1'
+        else:
+            ph = ','.join(['?'] * len(zone_areas))
+            query += f' AND {p_alias}.area_id IN ({ph})'
+            params.extend(zone_areas)
+    return query, params
+
+
 def check_project_access(conn, user, project_id):
     allowed = get_user_projects(conn, user['id'], user['role'])
     if allowed is None:
@@ -2199,6 +2313,61 @@ def api_contractors():
     return jsonify(sorted(names))
 
 
+@app.route('/api/filter-options')
+@require_auth
+def api_filter_options():
+    """Return distinct values for the dashboard filter palette categories.
+    One round-trip; the frontend caches per-session."""
+    conn = get_db()
+    try:
+        def distinct(col, table='employees', where_extra=''):
+            rows = db_fetchall(conn, f'''SELECT DISTINCT {col} AS v FROM {table}
+                WHERE {col} IS NOT NULL AND TRIM({col}) != '' {where_extra}
+                ORDER BY {col}''')
+            return [r['v'] for r in rows]
+
+        divisions = db_fetchall(conn, 'SELECT id, name FROM divisions ORDER BY name')
+        areas = db_fetchall(conn, '''SELECT a.id, a.name, a.division_id, d.name AS division_name
+            FROM areas a JOIN divisions d ON d.id = a.division_id ORDER BY d.name, a.name''')
+        projects = db_fetchall(conn, '''SELECT p.id, p.name, p.area_id, p.contractor_company, a.division_id
+            FROM projects p JOIN areas a ON a.id = p.area_id ORDER BY p.name''')
+
+        contractors = set()
+        for r in db_fetchall(conn, "SELECT DISTINCT contractor_company FROM projects WHERE contractor_company IS NOT NULL AND TRIM(contractor_company) != ''"):
+            contractors.add(r['contractor_company'])
+        for r in db_fetchall(conn, "SELECT DISTINCT subcontractor FROM employees WHERE active = 1 AND subcontractor IS NOT NULL AND TRIM(subcontractor) != ''"):
+            contractors.add(r['subcontractor'])
+
+        camps = distinct('camp_name', 'employees WHERE active = 1', '')
+        fieldglass = distinct('fieldglass_status', 'employees WHERE active = 1', '')
+        disciplines = distinct('discipline', 'employees WHERE active = 1', '')
+        nationalities = distinct('nationality', 'employees WHERE active = 1', '')
+        chronic = distinct('chronic_condition', 'employees WHERE active = 1',
+                           "AND LOWER(TRIM(chronic_condition)) NOT IN ('none','no','nil','n/a')")
+
+        age_row = db_fetchone(conn, '''SELECT MIN(CAST(NULLIF(age,'') AS INTEGER)) AS amin,
+                                              MAX(CAST(NULLIF(age,'') AS INTEGER)) AS amax
+                                       FROM employees WHERE active = 1''')
+        age_min = age_row['amin'] if age_row and age_row['amin'] else 18
+        age_max = age_row['amax'] if age_row and age_row['amax'] else 70
+    finally:
+        conn.close()
+    return jsonify({
+        'divisions':      [{'id': r['id'], 'name': r['name']} for r in divisions],
+        'areas':          [{'id': r['id'], 'name': r['name'], 'division_id': r['division_id'], 'division_name': r['division_name']} for r in areas],
+        'projects':       [{'id': r['id'], 'name': r['name'], 'area_id': r['area_id'], 'division_id': r['division_id'], 'contractor_company': r['contractor_company']} for r in projects],
+        'contractors':    sorted(contractors),
+        'camps':          camps,
+        'fieldglass':     fieldglass,
+        'disciplines':    disciplines,
+        'nationalities':  nationalities,
+        'chronic':        chronic,
+        'twl_zones':      [{'id': 'low', 'name': 'Low (TWL ≥ 140)'}, {'id': 'medium', 'name': 'Medium (115–140)'}, {'id': 'high', 'name': 'High (< 115)'}],
+        'age_min':        age_min,
+        'age_max':        age_max,
+    })
+
+
 @app.route('/api/employees')
 @require_auth
 def api_employees():
@@ -2317,21 +2486,22 @@ def api_scan():
 @require_auth
 def api_headcount():
     scan_date = request.args.get('date', date.today().isoformat())
-    project_id = request.args.get('project_id')
     site_id = request.args.get('site_id')
 
     conn = get_db()
     try:
         query = '''SELECT p.name as project_name, s.name as site_name, a.session, COUNT(DISTINCT a.employee_no) as count
-            FROM attendance a JOIN sites s ON s.id = a.site_id JOIN projects p ON p.id = a.project_id
-            WHERE a.scan_date = ?'''
+            FROM attendance a
+            JOIN sites s ON s.id = a.site_id
+            JOIN projects p ON p.id = a.project_id
+            JOIN areas ar ON ar.id = p.area_id
+            JOIN employees e ON e.employee_no = a.employee_no AND e.project_id = a.project_id
+            WHERE a.scan_date = ? AND e.active = 1'''
         params = [scan_date]
-        if project_id:
-            query += ' AND a.project_id = ?'
-            params.append(project_id)
         if site_id:
             query += ' AND a.site_id = ?'
             params.append(site_id)
+        query, params = apply_dashboard_filters(conn, query, params, request.args, e_alias='e', p_alias='p', a_alias='ar', att_alias='a')
         query, params = apply_project_filter(conn, query, params, request.user)
         query += ' GROUP BY p.name, s.name, a.session ORDER BY p.name, s.name'
         rows = db_fetchall(conn, query, params)
@@ -2340,16 +2510,24 @@ def api_headcount():
         for row in rows:
             key = f"{row['project_name']}|{row['site_name']}"
             if key not in results:
-                ec = db_fetchone(conn, '''SELECT COUNT(*) as c FROM employees e JOIN projects p ON p.id = e.project_id
-                    WHERE e.active = 1 AND p.name = ? AND e.work_location = ?''', (row['project_name'], row['site_name']))
+                # Total employees on roster for this site, filtered identically
+                eq = '''SELECT COUNT(DISTINCT e.id) as c FROM employees e
+                    JOIN projects p ON p.id = e.project_id
+                    JOIN areas ar ON ar.id = p.area_id
+                    WHERE e.active = 1 AND p.name = ? AND e.work_location = ?'''
+                ep = [row['project_name'], row['site_name']]
+                eq, ep = apply_dashboard_filters(conn, eq, ep, request.args, e_alias='e', p_alias='p', a_alias='ar')
+                eq, ep = apply_project_filter(conn, eq, ep, request.user, 'e')
+                ec = db_fetchone(conn, eq, ep)
                 results[key] = {'project': row['project_name'], 'site': row['site_name'], 'total_employees': ec['c'], 'AM': 0, 'PM': 0, 'EV': 0}
             results[key][row['session']] = row['count']
 
-        tq = 'SELECT COUNT(*) as c FROM employees e WHERE e.active = 1'
+        tq = '''SELECT COUNT(DISTINCT e.id) as c FROM employees e
+            JOIN projects p ON p.id = e.project_id
+            JOIN areas ar ON ar.id = p.area_id
+            WHERE e.active = 1'''
         tp = []
-        if project_id:
-            tq += ' AND e.project_id = ?'
-            tp.append(project_id)
+        tq, tp = apply_dashboard_filters(conn, tq, tp, request.args, e_alias='e', p_alias='p', a_alias='ar')
         tq, tp = apply_project_filter(conn, tq, tp, request.user, 'e')
         total = db_fetchone(conn, tq, tp)['c']
     finally:
@@ -2469,11 +2647,6 @@ def api_trends():
     days = int(request.args.get('days', 30))
     session = request.args.get('session', '').upper()
     designation = request.args.get('designation', '').strip()
-    nationality = request.args.get('nationality', '').strip()
-    subcontractor = request.args.get('subcontractor', '').strip()
-    project_id = request.args.get('project_id', '')
-    area_id = request.args.get('area_id', type=int)
-    division_id = request.args.get('division_id', type=int)
 
     end = date.today()
     start = end - timedelta(days=days - 1)
@@ -2492,21 +2665,7 @@ def api_trends():
         if designation:
             query += ' AND e.designation = ?'
             params.append(designation)
-        if nationality:
-            query += ' AND e.nationality = ?'
-            params.append(nationality)
-        if subcontractor:
-            query += ' AND (e.subcontractor = ? OR e.contractor = ? OR p.contractor_company = ?)'
-            params.extend([subcontractor, subcontractor, subcontractor])
-        if project_id:
-            query += ' AND att.project_id = ?'
-            params.append(project_id)
-        if area_id:
-            query += ' AND p.area_id = ?'
-            params.append(area_id)
-        if division_id:
-            query += ' AND ar.division_id = ?'
-            params.append(division_id)
+        query, params = apply_dashboard_filters(conn, query, params, request.args, e_alias='e', p_alias='p', a_alias='ar', att_alias='att')
         query, params = apply_project_filter(conn, query, params, request.user, 'att')
         query += ' GROUP BY att.scan_date ORDER BY att.scan_date'
         rows = db_fetchall(conn, query, params)
@@ -2519,21 +2678,7 @@ def api_trends():
         if designation:
             tq += ' AND e.designation = ?'
             tp.append(designation)
-        if nationality:
-            tq += ' AND e.nationality = ?'
-            tp.append(nationality)
-        if subcontractor:
-            tq += ' AND (e.subcontractor = ? OR e.contractor = ? OR p.contractor_company = ?)'
-            tp.extend([subcontractor, subcontractor, subcontractor])
-        if project_id:
-            tq += ' AND e.project_id = ?'
-            tp.append(project_id)
-        if area_id:
-            tq += ' AND p.area_id = ?'
-            tp.append(area_id)
-        if division_id:
-            tq += ' AND ar.division_id = ?'
-            tp.append(division_id)
+        tq, tp = apply_dashboard_filters(conn, tq, tp, request.args, e_alias='e', p_alias='p', a_alias='ar')
         tq, tp = apply_project_filter(conn, tq, tp, request.user, 'e')
         total = db_fetchone(conn, tq, tp)['c']
 
