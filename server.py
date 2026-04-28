@@ -150,6 +150,10 @@ if USE_POSTGRES:
         return conn
 
     def _translate_sql(sql):
+        # Escape any literal % in the SQL (e.g. LIKE '%foo%') BEFORE adding %s placeholders,
+        # because psycopg2 uses %-formatting to bind params and would otherwise treat %f as
+        # a format specifier and raise 'IndexError: list index out of range'.
+        sql = sql.replace('%', '%%')
         sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
         sql = sql.replace('TIMESTAMP DEFAULT CURRENT_TIMESTAMP', "TIMESTAMP DEFAULT NOW()")
         # Order matters: replace longer patterns first
