@@ -1291,7 +1291,7 @@ def apply_dashboard_filters(conn, query, params, args, e_alias='e', p_alias='p',
     Assumes the query already joins employees as e_alias, projects as p_alias, areas as a_alias when those columns are referenced.
     Multi-value params are comma-separated (e.g. discipline=Mechanical,Electrical).
     Supported keys: division_id, area_id, project_id, subcontractor (contractor name), camp, fieldglass_status,
-                    discipline, nationality, chronic, age_from, age_to, twl_zone.
+                    discipline, designation, nationality, chronic, age_from, age_to, twl_zone.
     """
     if hasattr(args, 'get'):
         getter = args.get
@@ -1315,11 +1315,12 @@ def apply_dashboard_filters(conn, query, params, args, e_alias='e', p_alias='p',
     subs = _split_csv(getter('subcontractor'))
     if subs:
         ph = ','.join(['?'] * len(subs))
-        query += f' AND ({e_alias}.subcontractor IN ({ph}) OR {e_alias}.contractor IN ({ph}))'
-        params.extend(subs); params.extend(subs)
+        query += f' AND ({e_alias}.subcontractor IN ({ph}) OR {e_alias}.contractor IN ({ph}) OR {p_alias}.contractor_company IN ({ph}))'
+        params.extend(subs); params.extend(subs); params.extend(subs)
     in_clause(f'{e_alias}.camp_name', _split_csv(getter('camp')))
     in_clause(f'{e_alias}.fieldglass_status', _split_csv(getter('fieldglass_status')))
     in_clause(f'{e_alias}.discipline', _split_csv(getter('discipline')))
+    in_clause(f'{e_alias}.designation', _split_csv(getter('designation')))
     in_clause(f'{e_alias}.nationality', _split_csv(getter('nationality')))
     chronic_vals = _split_csv(getter('chronic'))
     if chronic_vals:
@@ -2459,6 +2460,7 @@ def api_filter_options():
         camps = distinct('camp_name')
         fieldglass = distinct('fieldglass_status')
         disciplines = distinct('discipline')
+        designations = distinct('designation')
         nationalities = distinct('nationality')
         chronic = distinct('chronic_condition',
                            where_extra="AND LOWER(TRIM(chronic_condition)) NOT IN ('none','no','nil','n/a')")
@@ -2478,6 +2480,7 @@ def api_filter_options():
         'camps':          camps,
         'fieldglass':     fieldglass,
         'disciplines':    disciplines,
+        'designations':   designations,
         'nationalities':  nationalities,
         'chronic':        chronic,
         'twl_zones':      [{'id': 'low', 'name': 'Low (TWL ≥ 140)'}, {'id': 'medium', 'name': 'Medium (115–140)'}, {'id': 'high', 'name': 'High (< 115)'}],
@@ -2492,9 +2495,6 @@ def api_employees():
     conn = get_db()
     try:
         search = request.args.get('search', '')
-        project_id = request.args.get('project_id', '')
-        area_id = request.args.get('area_id', type=int)
-        division_id = request.args.get('division_id', type=int)
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 500))
         offset = (page - 1) * per_page
@@ -2506,19 +2506,7 @@ def api_employees():
             LEFT JOIN divisions d ON d.id = a.division_id
             WHERE e.active = 1'''
         params = []
-        if project_id:
-            query += ' AND e.project_id = ?'
-            params.append(project_id)
-        if area_id:
-            query += ' AND p.area_id = ?'
-            params.append(area_id)
-        if division_id:
-            query += ' AND a.division_id = ?'
-            params.append(division_id)
-        subcontractor = request.args.get('subcontractor', '').strip()
-        if subcontractor:
-            query += ' AND (e.subcontractor = ? OR e.contractor = ? OR p.contractor_company = ?)'
-            params.extend([subcontractor, subcontractor, subcontractor])
+        query, params = apply_dashboard_filters(conn, query, params, request.args, e_alias='e', p_alias='p', a_alias='a')
         query, params = apply_project_filter(conn, query, params, request.user, 'e')
         if search:
             escaped = search.replace('%', r'\%').replace('_', r'\_')

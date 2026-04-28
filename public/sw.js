@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pob-v10-2026-04-29-attendance-details';
+const CACHE_NAME = 'pob-v12-2026-04-29-dash-designation';
 const STATIC_ASSETS = [
     '/',
     '/index.html',

@@ -270,11 +270,6 @@ function initLogin() {
             const el = $(sel);
             if (el) el.value = '';
         });
-        const dv = $('#login-division'); if (dv) dv.value = '';
-        const ar = $('#login-area');
-        if (ar) { ar.innerHTML = '<option value="">Select division first</option>'; ar.disabled = true; }
-        const pr = $('#login-project');
-        if (pr) { pr.innerHTML = '<option value="">Select area first</option>'; pr.disabled = true; }
         setMode('scanner');
         const u = $('#login-username');
         if (u) u.focus();
@@ -299,73 +294,13 @@ function initLogin() {
     modeAdmin.addEventListener('click', () => setMode('admin'));
     if (backMainBtn) backMainBtn.addEventListener('click', resetToMain);
 
-    const divisionSelect = $('#login-division');
-    const areaSelect = $('#login-area');
-    const projectSelect = $('#login-project');
-    let _locations = null;
-
-    async function loadLoginLocations() {
-        if (_locations || !divisionSelect) return;
-        try {
-            const res = await fetch('/api/public/locations');
-            const data = await res.json();
-            if (!data || !data.success) return;
-            _locations = data;
-            divisionSelect.innerHTML = '<option value="">-- Select Division --</option>' +
-                data.divisions.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-        } catch (_) { /* offline / will retry on submit */ }
-    }
-    loadLoginLocations();
-
-    function repopulateAreas(divisionId) {
-        if (!areaSelect) return;
-        if (!divisionId || !_locations) {
-            areaSelect.innerHTML = '<option value="">Select division first</option>';
-            areaSelect.disabled = true;
-            return;
-        }
-        const filtered = _locations.areas.filter(a => String(a.division_id) === String(divisionId));
-        areaSelect.innerHTML = '<option value="">-- Select Area --</option>' +
-            filtered.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-        areaSelect.disabled = false;
-    }
-    function repopulateProjects(areaId) {
-        if (!projectSelect) return;
-        if (!areaId || !_locations) {
-            projectSelect.innerHTML = '<option value="">Select area first</option>';
-            projectSelect.disabled = true;
-            return;
-        }
-        const filtered = _locations.projects.filter(p => String(p.area_id) === String(areaId));
-        projectSelect.innerHTML = '<option value="">-- Select Project --</option>' +
-            filtered.map(p => `<option value="${p.id}" data-name="${esc(p.name)}">${esc(p.name)}</option>`).join('');
-        projectSelect.disabled = false;
-    }
-
-    divisionSelect?.addEventListener('change', () => {
-        repopulateAreas(divisionSelect.value);
-        repopulateProjects('');
-    });
-    areaSelect?.addEventListener('change', () => repopulateProjects(areaSelect.value));
-
     async function doLogin() {
         setError('');
         let body;
-        let scannerSetup = null;
         if (loginMode === 'scanner') {
             const username = $('#login-username').value.trim();
             const pin = $('#login-pin').value.trim();
             if (!username || !pin) { setError('Enter username and PIN'); return; }
-            const divisionId = divisionSelect ? divisionSelect.value : '';
-            const areaId = areaSelect ? areaSelect.value : '';
-            const projectId = projectSelect ? projectSelect.value : '';
-            const projectName = projectSelect && projectSelect.selectedIndex >= 0
-                ? (projectSelect.options[projectSelect.selectedIndex]?.dataset?.name || '')
-                : '';
-            if (!divisionId) { setError('Select a Division'); return; }
-            if (!areaId) { setError('Select an Area'); return; }
-            if (!projectId) { setError('Select a Project'); return; }
-            scannerSetup = { divisionId, areaId, projectId, projectName };
             body = { username, pin, login_mode: 'scanner' };
         } else {
             const username = $('#login-admin-username').value.trim();
@@ -391,20 +326,6 @@ function initLogin() {
                 state.user = data.user;
                 localStorage.setItem('pob_token', data.token);
                 localStorage.setItem('pob_user', JSON.stringify(data.user));
-                if (scannerSetup) {
-                    state.divisionId = scannerSetup.divisionId;
-                    state.areaId = scannerSetup.areaId;
-                    state.projectId = scannerSetup.projectId;
-                    state.projectName = scannerSetup.projectName;
-                    localStorage.setItem('pob_setup', JSON.stringify({
-                        projectId: scannerSetup.projectId,
-                        projectName: scannerSetup.projectName,
-                        divisionId: scannerSetup.divisionId,
-                        areaId: scannerSetup.areaId,
-                        siteId: null, siteName: '',
-                        session: sessionByHour()
-                    }));
-                }
                 $('#login-pin').value = '';
                 $('#login-totp').value = '';
                 showApp();
@@ -1253,6 +1174,7 @@ const FILTER_CATEGORIES = [
     { key: 'camp',              label: 'Camp',              source: 'camps',         simple: true },
     { key: 'fieldglass_status', label: 'Fieldglass Status', source: 'fieldglass',    simple: true },
     { key: 'discipline',        label: 'Discipline',        source: 'disciplines',   simple: true },
+    { key: 'designation',       label: 'Designation',       source: 'designations',  simple: true },
     { key: 'nationality',       label: 'Nationality',       source: 'nationalities', simple: true },
     { key: 'age',               label: 'Age Range',         range: true },
     { key: 'chronic',           label: 'Chronic Condition', source: 'chronic',       simple: true, hasAny: true },
@@ -1278,6 +1200,7 @@ function _filterChipIcon(catKey) {
         camp: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18L12 4 3 21z"/></svg>',
         fieldglass_status: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>',
         discipline: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.7-3.7a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.7 3.7z"/></svg>',
+        designation: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>',
         nationality: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>',
         age: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
         chronic: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 1 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
@@ -1689,6 +1612,7 @@ function getDashFilterParams() {
         camp: 'camp',
         fieldglass_status: 'fieldglass_status',
         discipline: 'discipline',
+        designation: 'designation',
         nationality: 'nationality',
         chronic: 'chronic',
     };
@@ -1876,6 +1800,7 @@ async function loadDashCharts() {
     loadDashChronicChart();
     loadDashOIChart();
     loadDashDisciplineChart();
+    loadDashDesignationChart();
     loadDashWeatherSummary();
     loadDashNationalityChart();
 }
@@ -2157,11 +2082,40 @@ async function loadDashDisciplineChart() {
     if (!canvas) return;
     const filterParams = getDashFilterParams();
     const data = await api('/employees' + (filterParams ? '?' + filterParams : ''));
-    if (!Array.isArray(data) || !data.length) return;
+    if (!Array.isArray(data) || !data.length) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No data', w / 2 - 28, h / 2);
+        return;
+    }
     const discCounts = {};
     data.forEach(w => { const d = w.discipline || 'Unknown'; discCounts[d] = (discCounts[d] || 0) + 1; });
     const sorted = Object.entries(discCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
     const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
+    drawHorizontalBarChart(canvas, sorted.map(s => s[0]), sorted.map(s => s[1]), colors, data.length);
+}
+
+async function loadDashDesignationChart() {
+    const canvas = $('#dash-designation-chart');
+    if (!canvas) return;
+    const filterParams = getDashFilterParams();
+    const data = await api('/employees' + (filterParams ? '?' + filterParams : ''));
+    if (!Array.isArray(data) || !data.length) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No data', w / 2 - 28, h / 2);
+        return;
+    }
+    const desigCounts = {};
+    data.forEach(w => { const d = w.designation || 'Unknown'; desigCounts[d] = (desigCounts[d] || 0) + 1; });
+    const sorted = Object.entries(desigCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const colors = ['#14b8a6', '#a855f7', '#f59e0b', '#ec4899', '#3b82f6', '#22c55e', '#ef4444', '#06b6d4', '#84cc16'];
     drawHorizontalBarChart(canvas, sorted.map(s => s[0]), sorted.map(s => s[1]), colors, data.length);
 }
 
@@ -2195,7 +2149,15 @@ async function loadDashNationalityChart() {
     if (!canvas) return;
     const filterParams = getDashFilterParams();
     const data = await api('/employees' + (filterParams ? '?' + filterParams : ''));
-    if (!Array.isArray(data) || !data.length) return;
+    if (!Array.isArray(data) || !data.length) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '13px Inter'; ctx.fillText('No data', w / 2 - 28, h / 2);
+        return;
+    }
     const natCounts = {};
     data.forEach(w => { const n = w.nationality || 'Unknown'; natCounts[n] = (natCounts[n] || 0) + 1; });
     const sorted = Object.entries(natCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
