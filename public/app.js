@@ -478,9 +478,14 @@ function initSetup() {
             backBtn.className = 'btn btn-outline';
             backBtn.style.marginTop = '8px';
             backBtn.style.width = '100%';
-            backBtn.textContent = 'Back to Sign In';
+            backBtn.textContent = 'Back to Main Page';
             confirmBtn.parentNode.insertBefore(backBtn, confirmBtn.nextSibling);
         }
+    }
+    // Keep label in sync if older HTML cached
+    const existingBack = document.getElementById('setup-back');
+    if (existingBack && existingBack.textContent.trim() !== 'Back to Main Page') {
+        existingBack.textContent = 'Back to Main Page';
     }
 
     function updateSetupConfirmState() {
@@ -3370,6 +3375,16 @@ function initTabs() {
         $('#setup-overlay').classList.remove('hidden');
         $('#main-content').style.display = 'none';
         if (state.scanner) { try { state.scanner.stop(); } catch(e) {} state.scanning = false; }
+    });
+
+    $('#btn-scanner-back-main')?.addEventListener('click', () => {
+        if (state.scanner) { try { state.scanner.stop(); } catch(e) {} state.scanning = false; }
+        try { state.divisionId = null; state.areaId = null; state.projectId = null; state.siteId = null; state.session = null; } catch(e) {}
+        const setupOverlay = document.getElementById('setup-overlay');
+        if (setupOverlay) setupOverlay.classList.add('hidden');
+        const mainContent = document.getElementById('main-content');
+        if (mainContent) mainContent.style.display = 'none';
+        doLogout();
     });
 }
 

@@ -140,7 +140,7 @@
                 </div>
             </div>
             <button id="setup-confirm" class="btn btn-primary btn-lg" disabled>Start Scanning</button>
-            <button id="setup-back" class="btn btn-outline" style="margin-top:8px;width:100%">Back to Sign In</button>
+            <button id="setup-back" class="btn btn-outline" style="margin-top:8px;width:100%">Back to Main Page</button>
         </div>
     </div>
 
@@ -208,6 +208,10 @@
             <button class="tab" data-tab="oi" id="oi-tab" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                 O&amp;I
+            </button>
+            <button class="tab" data-tab="risk" id="risk-tab" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                Risk Engine
             </button>
             <button class="tab active" data-tab="scanner">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
@@ -306,37 +310,6 @@
                     <button id="anomalies-toggle" class="btn btn-sm" style="padding:3px 10px;font-size:0.7rem">Collapse</button>
                 </div>
                 <div id="anomalies-list" class="anomalies-list"></div>
-            </div>
-
-            <!-- Predictive / Preventive Risk Engine -->
-            <div id="risk-engine-panel" class="risk-engine-panel">
-                <div class="risk-engine-header">
-                    <h3>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-                        Predictive Risk Engine
-                    </h3>
-                    <span id="risk-engine-level" class="risk-level-badge"></span>
-                </div>
-                <p class="risk-engine-disclaimer">Leading indicators and trends from attendance, health, O&amp;I, and TWL — for early warning and preventive action. Not a substitute for formal risk assessment.</p>
-                <div class="risk-engine-body">
-                    <div class="risk-gauge-wrap">
-                        <div class="risk-gauge-ring" id="risk-gauge-ring" style="--risk-pct:0">
-                            <div class="risk-gauge-inner">
-                                <span id="risk-index-value" class="risk-index-num">—</span>
-                                <span class="risk-index-label">risk index</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="risk-domains" id="risk-domains"></div>
-                </div>
-                <div class="risk-engine-section">
-                    <h4 class="risk-subhead">Predictive signals</h4>
-                    <div id="risk-predictive-list" class="risk-signal-list"></div>
-                </div>
-                <div class="risk-engine-section">
-                    <h4 class="risk-subhead">Preventive actions (prioritized)</h4>
-                    <ol id="risk-preventive-list" class="risk-preventive-list"></ol>
-                </div>
             </div>
 
             <!-- Charts Grid -->
@@ -508,9 +481,10 @@
                         <span id="current-project-name" class="project-label">Project</span>
                         <span id="current-site-name" class="site-label">Site</span>
                     </div>
-                    <div style="display:flex;align-items:center;gap:6px">
+                    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                         <span id="current-session-label" class="badge badge-am">9 AM</span>
                         <button id="btn-change-setup" class="btn btn-sm btn-outline">Change</button>
+                        <button id="btn-scanner-back-main" class="btn btn-sm btn-outline" style="border-color:var(--danger);color:var(--danger)">Back to Main</button>
                     </div>
                 </div>
                 <div class="scan-counter">
@@ -847,6 +821,104 @@
             <div class="section" style="margin-top:16px">
                 <h3 style="margin-bottom:12px">Recent Observations</h3>
                 <div id="oi-readings-list" class="table-wrap" style="max-height:400px;overflow:auto"></div>
+            </div>
+        </div>
+
+        <!-- Risk Engine Tab -->
+        <div id="tab-risk" class="tab-content">
+            <div class="section">
+                <div class="risk-engine-toolbar">
+                    <div class="risk-tool-group">
+                        <label class="risk-tool-label">As of</label>
+                        <input type="date" id="risk-asof" class="input risk-tool-input">
+                    </div>
+                    <div class="risk-tool-group">
+                        <label class="risk-tool-label">Division</label>
+                        <select id="risk-division" class="input risk-tool-input"><option value="">All</option></select>
+                    </div>
+                    <div class="risk-tool-group">
+                        <label class="risk-tool-label">Area</label>
+                        <select id="risk-area" class="input risk-tool-input"><option value="">All</option></select>
+                    </div>
+                    <div class="risk-tool-group">
+                        <label class="risk-tool-label">Project</label>
+                        <select id="risk-project" class="input risk-tool-input"><option value="">All</option></select>
+                    </div>
+                    <div class="risk-tool-group risk-tool-actions">
+                        <button id="risk-use-dash" class="btn btn-sm btn-outline" title="Copy date and scope from the Dashboard tab">Use Dashboard scope</button>
+                        <button id="risk-engine-refresh" class="btn btn-sm btn-primary">Refresh</button>
+                    </div>
+                </div>
+
+                <div class="risk-subtabs" role="tablist">
+                    <button class="risk-subtab active" data-rsub="live" role="tab" aria-selected="true">Live</button>
+                    <button class="risk-subtab" data-rsub="backtest" role="tab" aria-selected="false">Backtest <span id="risk-backtest-badge" class="risk-subtab-badge"></span></button>
+                </div>
+
+                <div id="risk-sub-live" class="risk-subview active">
+                    <div id="risk-engine-panel" class="risk-engine-panel">
+                        <div class="risk-engine-header">
+                            <h3>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                                Predictive Risk Engine
+                            </h3>
+                            <span id="risk-engine-level" class="risk-level-badge"></span>
+                        </div>
+                        <p class="risk-engine-disclaimer">Leading indicators and trends from attendance, health, O&amp;I, and TWL — for early warning and preventive action. Confidence scores are auto-calibrated from the rolling 90-day backtest hit rate per domain. Not a substitute for formal risk assessment.</p>
+                        <div class="risk-engine-body">
+                            <div class="risk-gauge-wrap">
+                                <div class="risk-gauge-ring" id="risk-gauge-ring" style="--risk-pct:0">
+                                    <div class="risk-gauge-inner">
+                                        <span id="risk-index-value" class="risk-index-num">—</span>
+                                        <span class="risk-index-label">risk index</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="risk-domains" id="risk-domains"></div>
+                        </div>
+                        <div class="risk-engine-section">
+                            <h4 class="risk-subhead">Predictive signals</h4>
+                            <div id="risk-predictive-list" class="risk-signal-list"></div>
+                        </div>
+                        <div class="risk-engine-section">
+                            <h4 class="risk-subhead">Preventive actions (prioritized)</h4>
+                            <ol id="risk-preventive-list" class="risk-preventive-list"></ol>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="risk-sub-backtest" class="risk-subview">
+                    <div class="risk-backtest-controls">
+                        <label class="risk-tool-label">Lookback</label>
+                        <select id="risk-backtest-window" class="input risk-tool-input">
+                            <option value="30">30 days</option>
+                            <option value="90" selected>90 days</option>
+                            <option value="180">180 days</option>
+                            <option value="365">1 year</option>
+                        </select>
+                        <span id="risk-backtest-summary" class="risk-backtest-summary"></span>
+                    </div>
+
+                    <div class="risk-backtest-grid">
+                        <div class="risk-backtest-card">
+                            <h4 class="risk-subhead">Hit rate by domain</h4>
+                            <div id="risk-backtest-domains" class="risk-domains"></div>
+                        </div>
+                        <div class="risk-backtest-card">
+                            <h4 class="risk-subhead">Calibration (predicted vs observed)</h4>
+                            <canvas id="risk-calibration-chart" style="width:100%;height:240px;max-height:240px;background:var(--bg-card);border-radius:var(--radius);box-sizing:border-box"></canvas>
+                        </div>
+                        <div class="risk-backtest-card">
+                            <h4 class="risk-subhead">Severity confusion matrix</h4>
+                            <div id="risk-backtest-confusion" class="risk-confusion-wrap"></div>
+                        </div>
+                    </div>
+
+                    <div class="risk-backtest-card" style="margin-top:14px">
+                        <h4 class="risk-subhead">Signal feed (most recent first)</h4>
+                        <div id="risk-backtest-feed" class="table-wrap" style="max-height:520px;overflow:auto"></div>
+                    </div>
+                </div>
             </div>
         </div>
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pob-v3-2026-04-29';
+const CACHE_NAME = 'pob-v5-2026-04-29-back-buttons';
 const STATIC_ASSETS = [
     '/',
     '/index.html',
