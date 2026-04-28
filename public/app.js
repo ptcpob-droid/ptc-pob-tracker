@@ -1176,35 +1176,11 @@ function _openPopover(catKey, anchorEl) {
     _activePopoverCat = catKey;
     title.textContent = cat.label;
 
-    // Show first (so we can read its real size), then position relative to viewport.
     popover.classList.remove('hidden');
-    popover.style.visibility = 'hidden';
+    const dropzone = $('#filter-dropzone');
+    if (dropzone) dropzone.classList.add('picker-open');
     requestAnimationFrame(() => {
-        const aRect = anchorEl.getBoundingClientRect();
-        const pRect = popover.getBoundingClientRect();
-        const margin = 8;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const popW = Math.min(pRect.width || 320, 360);
-        const popH = Math.min(pRect.height || 320, vh * 0.6);
-
-        const spaceBelow = vh - aRect.bottom - margin;
-        const spaceAbove = aRect.top - margin;
-        let top;
-        if (spaceBelow >= popH || spaceBelow >= spaceAbove) {
-            top = aRect.bottom + margin;
-            // If still doesn't fit, clamp so it stays inside viewport
-            if (top + popH > vh - margin) top = Math.max(margin, vh - popH - margin);
-        } else {
-            top = Math.max(margin, aRect.top - popH - margin);
-        }
-        let left = aRect.left;
-        if (left + popW > vw - margin) left = Math.max(margin, vw - popW - margin);
-        if (left < margin) left = margin;
-
-        popover.style.top = `${top}px`;
-        popover.style.left = `${left}px`;
-        popover.style.visibility = '';
+        if (popover.scrollIntoView) popover.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
 
     if (cat.range) {
@@ -1284,6 +1260,8 @@ function _getOptionsFor(cat) {
 function _closePopover() {
     const popover = $('#filter-popover');
     if (popover) popover.classList.add('hidden');
+    const dropzone = $('#filter-dropzone');
+    if (dropzone) dropzone.classList.remove('picker-open');
     _activePopoverCat = null;
 }
 
